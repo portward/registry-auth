@@ -9,6 +9,8 @@ import (
 	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/portward/registry-auth/auth"
 )
 
 func TestRefreshTokenIssuer_IssueRefreshToken(t *testing.T) {
@@ -26,7 +28,7 @@ func TestRefreshTokenIssuer_IssueRefreshToken(t *testing.T) {
 	tokenIssuer := NewRefreshTokenIssuer(issuer, signingKey, WithClock(clock))
 
 	subject := subjectStub{
-		id: "id",
+		id: auth.SubjectIDFromString("id"),
 	}
 
 	token, err := tokenIssuer.IssueRefreshToken(context.Background(), service, subject)

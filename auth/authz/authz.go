@@ -84,7 +84,7 @@ func (a DefaultRepositoryAuthorizer) Authorize(_ context.Context, name string, s
 		return nil, auth.ErrUnauthorized
 	}
 
-	if !strings.HasPrefix(name, fmt.Sprintf("%s/", auth.GetSubjectName(subject))) {
+	if !strings.HasPrefix(name, fmt.Sprintf("%s/", subject.ID().String())) {
 		return []string{}, nil
 	}
 

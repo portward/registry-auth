@@ -87,7 +87,7 @@ func TestUser(t *testing.T) {
 		},
 	}
 
-	assert.Equal(t, auth.SubjectID(username), user.ID())
+	assert.Equal(t, auth.SubjectIDFromString(username), user.ID())
 
 	val, ok := user.Attribute(attrKey)
 	assert.Equal(t, attrValue, val)

@@ -37,7 +37,7 @@ type User struct {
 
 // ID implements auth.Subject.
 func (u User) ID() auth.SubjectID {
-	return auth.SubjectID(u.Username)
+	return auth.SubjectIDFromString(u.Username)
 }
 
 // Attribute implements auth.Subject.
@@ -80,7 +80,7 @@ func (a UserAuthenticator) AuthenticatePassword(_ context.Context, username stri
 
 // GetSubjectByID implements SubjectRepository.
 func (a UserAuthenticator) GetSubjectByID(_ context.Context, id auth.SubjectID) (auth.Subject, error) {
-	user, ok := a.entries[string(id)]
+	user, ok := a.entries[id.String()]
 	if !ok || !user.Enabled {
 		return nil, auth.ErrAuthenticationFailed
 	}

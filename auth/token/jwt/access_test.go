@@ -39,7 +39,7 @@ func TestAccessTokenIssuer_IssueAccessToken(t *testing.T) {
 	tokenIssuer := NewAccessTokenIssuer(issuer, signingKey, expiration, WithClock(clock), WithIDGenerator(idGenerator))
 
 	subject := subjectStub{
-		id: "id",
+		id: auth.SubjectIDFromString("id"),
 	}
 
 	scopes := []auth.Scope{
