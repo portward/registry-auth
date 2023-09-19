@@ -48,7 +48,7 @@ func (a repositoryAuthorizerStub) Authorize(_ context.Context, name string, _ au
 
 func TestDefaultAuthorizer(t *testing.T) {
 	subject := subject{
-		id: "user",
+		id: auth.SubjectIDFromString("user"),
 	}
 
 	testCases := []struct {

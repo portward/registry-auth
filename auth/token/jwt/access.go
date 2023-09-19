@@ -75,7 +75,7 @@ func (i AccessTokenIssuer) IssueAccessToken(_ context.Context, service string, s
 		RegisteredClaims: jwt.RegisteredClaims{
 			ID:        id,
 			Issuer:    i.issuer,
-			Subject:   string(subject.ID()),
+			Subject:   subject.ID().String(),
 			Audience:  []string{service},
 			ExpiresAt: jwt.NewNumericDate(now.Add(i.expiration)),
 			NotBefore: jwt.NewNumericDate(now),

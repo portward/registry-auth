@@ -47,7 +47,7 @@ func (i RefreshTokenIssuer) IssueRefreshToken(_ context.Context, service string,
 
 	claims := jwt.RegisteredClaims{
 		Issuer:    i.issuer,
-		Subject:   string(subject.ID()),
+		Subject:   subject.ID().String(),
 		Audience:  []string{service},
 		NotBefore: jwt.NewNumericDate(now),
 		IssuedAt:  jwt.NewNumericDate(now),
@@ -71,7 +71,7 @@ func (i RefreshTokenIssuer) VerifyRefreshToken(_ context.Context, service string
 		return i.signingKey.CryptoPublicKey(), nil
 	})
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	// TODO: validate audience/service/issuer?
 
@@ -82,5 +82,5 @@ func (i RefreshTokenIssuer) VerifyRefreshToken(_ context.Context, service string
 	claims.VerifyAudience(service, true)
 	claims.VerifyIssuer(i.issuer, true)
 
-	return auth.SubjectID(claims.Subject), nil
+	return auth.SubjectIDFromString(claims.Subject), nil
 }
