@@ -82,7 +82,7 @@ func TestUser(t *testing.T) {
 
 	user := User{
 		Username: username,
-		Attrs: map[string]string{
+		Attrs: map[string]any{
 			attrKey: attrValue,
 		},
 	}

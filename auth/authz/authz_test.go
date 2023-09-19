@@ -13,16 +13,16 @@ import (
 
 type subject struct {
 	id         auth.SubjectID
-	attributes map[string]string
+	attributes map[string]any
 }
 
 func (s subject) ID() auth.SubjectID {
 	return s.id
 }
 
-func (s subject) Attribute(key string) (string, bool) {
+func (s subject) Attribute(key string) (any, bool) {
 	if s.attributes == nil {
-		return "", false
+		return nil, false
 	}
 
 	v, ok := s.attributes[key]
@@ -30,7 +30,7 @@ func (s subject) Attribute(key string) (string, bool) {
 	return v, ok
 }
 
-func (s subject) Attributes() map[string]string {
+func (s subject) Attributes() map[string]any {
 	return maps.Clone(s.attributes)
 }
 

@@ -36,12 +36,12 @@ type Subject interface {
 	ID() SubjectID
 
 	// Attribute returns an attribute value and a boolean flag that shows whether the value exists or not.
-	Attribute(key string) (string, bool)
+	Attribute(key string) (any, bool)
 
 	// Attributes are arbitrary key-value pairs that helps an Authorizer to make authorization decisions.
 	//
 	// Attributes MAY return a copy of it's internal map to avoid modifications.
 	// As a result, it MAY be a relatively expensive operation and SHOULD only be used when necessary.
 	// Prefer using Attribute instead.
-	Attributes() map[string]string
+	Attributes() map[string]any
 }
