@@ -32,7 +32,7 @@ type User struct {
 	Enabled      bool
 	Username     string
 	PasswordHash string
-	Attrs        map[string]string
+	Attrs        map[string]any
 }
 
 // ID implements auth.Subject.
@@ -41,7 +41,7 @@ func (u User) ID() auth.SubjectID {
 }
 
 // Attribute implements auth.Subject.
-func (u User) Attribute(key string) (string, bool) {
+func (u User) Attribute(key string) (any, bool) {
 	if u.Attrs == nil {
 		return "", false
 	}
@@ -52,7 +52,7 @@ func (u User) Attribute(key string) (string, bool) {
 }
 
 // Attributes implements auth.Subject.
-func (u User) Attributes() map[string]string {
+func (u User) Attributes() map[string]any {
 	return maps.Clone(u.Attrs)
 }
 
