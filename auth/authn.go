@@ -13,7 +13,7 @@ var ErrAuthenticationFailed = errors.New("authentication failed")
 
 // PasswordAuthenticator authenticates a subject using the "password" grant or basic auth.
 //
-// It returns an ErrAuthenticationFailed error in case credentials are invalid.
+// It returns an [ErrAuthenticationFailed] error in case credentials are invalid.
 type PasswordAuthenticator interface {
 	AuthenticatePassword(ctx context.Context, username string, password string) (Subject, error)
 }

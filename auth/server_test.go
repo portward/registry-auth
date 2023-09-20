@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"log/slog"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -108,7 +107,6 @@ func TestServer(t *testing.T) {
 
 	server := auth.TokenServer{
 		Service: service,
-		Logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 
 	router := http.NewServeMux()

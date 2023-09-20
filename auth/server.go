@@ -3,7 +3,7 @@ package auth
 import (
 	"encoding/json"
 	"errors"
-	"log/slog"
+	"fmt"
 	"net/http"
 
 	"github.com/gorilla/schema"
@@ -22,10 +22,11 @@ func init() {
 // [Docker Registry v2 authentication]: https://github.com/distribution/distribution/blob/main/docs/spec/auth/index.md
 type TokenServer struct {
 	Service TokenService
-	Logger  *slog.Logger
+
+	ErrorHandler ErrorHandler
 }
 
-func handleError(err error, w http.ResponseWriter) {
+func httpHandleError(err error, w http.ResponseWriter) {
 	if errors.Is(err, ErrAuthenticationFailed) {
 		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
 
@@ -35,25 +36,37 @@ func handleError(err error, w http.ResponseWriter) {
 	http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 }
 
+func (s TokenServer) handleError(err error) {
+	if s.ErrorHandler == nil {
+		return
+	}
+
+	s.ErrorHandler.Handle(err)
+}
+
 // TokenHandler implements the [Docker Registry v2 authentication] specification.
 //
 // [Docker Registry v2 authentication]: https://github.com/distribution/distribution/blob/main/docs/spec/auth/token.md
 func (s TokenServer) TokenHandler(w http.ResponseWriter, r *http.Request) {
 	request, err := decodeTokenRequest(r)
 	if err != nil {
-		s.Logger.Error("failed to decode request", slog.Any("error", err))
-		handleError(err, w)
+		s.handleError(fmt.Errorf("decoding token request: %w", err))
+		httpHandleError(err, w)
+
 		return
 	}
 
 	response, err := s.Service.TokenHandler(r.Context(), request)
 	if err != nil {
-		handleError(err, w)
+		httpHandleError(err, w)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(response)
+	err = json.NewEncoder(w).Encode(response)
+	if err != nil {
+		s.handleError(fmt.Errorf("encoding token response: %w", err))
+	}
 }
 
 // TODO: error handling 400
@@ -98,19 +111,23 @@ type rawTokenRequest struct {
 func (s TokenServer) OAuth2Handler(w http.ResponseWriter, r *http.Request) {
 	request, err := decodeOAuth2Request(r)
 	if err != nil {
-		s.Logger.Error("failed to decode request", slog.Any("error", err))
-		handleError(err, w)
+		s.handleError(fmt.Errorf("decoding oauth2 token request: %w", err))
+		httpHandleError(err, w)
+
 		return
 	}
 
 	response, err := s.Service.OAuth2Handler(r.Context(), request)
 	if err != nil {
-		handleError(err, w)
+		httpHandleError(err, w)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(response)
+	err = json.NewEncoder(w).Encode(response)
+	if err != nil {
+		s.handleError(fmt.Errorf("encoding oauth2 token response: %w", err))
+	}
 }
 
 // TODO: error handling 400

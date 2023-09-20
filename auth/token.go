@@ -22,8 +22,7 @@ type AccessTokenIssuer interface {
 	IssueAccessToken(ctx context.Context, service string, subject Subject, grantedScopes []Scope) (AccessToken, error)
 }
 
-// RefreshTokenIssuer issues a token that a client can use to issue a new token for a subject without presenting credentials again.
-// TODO: add service as a parameter.
+// RefreshTokenIssuer issues a token that a client can use to issue a new access token for a subject without presenting credentials again.
 type RefreshTokenIssuer interface {
 	IssueRefreshToken(ctx context.Context, service string, subject Subject) (string, error)
 }
