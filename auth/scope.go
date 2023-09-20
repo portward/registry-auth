@@ -2,7 +2,6 @@ package auth
 
 import (
 	"fmt"
-	"regexp"
 	"strings"
 
 	"github.com/portward/registry-auth/pkg/slices"
@@ -28,16 +27,11 @@ func (s Scope) String() string {
 
 // Resource describes a resource by type and name.
 type Resource struct {
-	Type  string `json:"type"`
-	Class string `json:"class"`
-	Name  string `json:"name"`
+	Type string `json:"type"`
+	Name string `json:"name"`
 }
 
 func (r Resource) String() string {
-	if r.Class != "" {
-		return fmt.Sprintf("%s(%s):%s", r.Type, r.Class, r.Name)
-	}
-
 	return fmt.Sprintf("%s:%s", r.Type, r.Name)
 }
 
@@ -67,32 +61,11 @@ func ParseScope(scope string) (Scope, error) {
 		return Scope{}, fmt.Errorf("invalid scope format: %q", scope)
 	}
 
-	resourceType, resourceClass := splitResourceClass(resourceType)
-	if resourceType == "" {
-		return Scope{}, fmt.Errorf("invalid scope format: %q", scope)
-	}
-
 	return Scope{
 		Resource: Resource{
-			Type:  resourceType,
-			Class: resourceClass,
-			Name:  resourceName,
+			Type: resourceType,
+			Name: resourceName,
 		},
 		Actions: slices.Map(strings.Split(actions, ","), strings.TrimSpace),
 	}, nil
-}
-
-var resourceTypeRegexp = regexp.MustCompile(`^([a-z0-9]+)(\([a-z0-9]+\))?$`)
-
-func splitResourceClass(t string) (string, string) {
-	matches := resourceTypeRegexp.FindStringSubmatch(t)
-	if len(matches) < 2 {
-		return "", ""
-	}
-
-	if len(matches) == 2 || len(matches[2]) < 2 {
-		return matches[1], ""
-	}
-
-	return matches[1], matches[2][1 : len(matches[2])-1]
 }
