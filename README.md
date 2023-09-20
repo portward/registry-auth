@@ -9,9 +9,33 @@
 > [!WARNING]
 > **Project is under development. Backwards compatibility is not guaranteed.**
 
+## installation
+
+```shell
+go get github.com/portward/registry-auth
+```
+
+## Usage
+
+This project is a _library_ that you can use to build your own authorization service for a container registry.
+
+To see it in action, check out [https://github.com/portward/portward](https://github.com/portward/portward).
+
 ## Development
 
 **For an optimal developer experience, it is recommended to install [Nix](https://nixos.org/download.html) and [direnv](https://direnv.net/docs/installation.html).**
+
+Run tests:
+
+```shell
+go test -race -v ./...
+```
+
+Run linter:
+
+```shell
+golangci-lint run
+```
 
 ## License
 
