@@ -15,13 +15,14 @@ import (
 
 	"github.com/docker/libtrust"
 	"github.com/jonboulle/clockwork"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"golang.org/x/crypto/bcrypt"
+
 	"github.com/portward/registry-auth/auth"
 	"github.com/portward/registry-auth/auth/authn"
 	"github.com/portward/registry-auth/auth/authz"
 	"github.com/portward/registry-auth/auth/token/jwt"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-	"golang.org/x/crypto/bcrypt"
 )
 
 type idGeneratorStub struct {
