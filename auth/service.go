@@ -260,7 +260,7 @@ func (s TokenServiceImpl) OAuth2Handler(ctx context.Context, r OAuth2Request) (O
 		Scope:     Scopes(grantedScopes).String(),
 	}
 
-	if r.AccessType == AccessTypeOffline && subject != nil && r.GrantType == GrantTypeRefreshToken {
+	if r.AccessType == AccessTypeOffline && subject != nil {
 		token, err := s.TokenIssuer.IssueRefreshToken(ctx, r.Service, subject)
 		if err != nil {
 			return OAuth2Response{}, err
@@ -269,7 +269,7 @@ func (s TokenServiceImpl) OAuth2Handler(ctx context.Context, r OAuth2Request) (O
 		refreshToken = token
 	}
 
-	if refreshToken != "" {
+	if r.AccessType == AccessTypeOffline && refreshToken != "" {
 		response.RefreshToken = refreshToken
 	}
 

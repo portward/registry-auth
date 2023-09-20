@@ -1,0 +1,468 @@
+package auth_test
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"log/slog"
+	"maps"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/docker/libtrust"
+	"github.com/jonboulle/clockwork"
+	"github.com/portward/registry-auth/auth"
+	"github.com/portward/registry-auth/auth/authn"
+	"github.com/portward/registry-auth/auth/authz"
+	"github.com/portward/registry-auth/auth/token/jwt"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"golang.org/x/crypto/bcrypt"
+)
+
+type idGeneratorStub struct {
+	id string
+}
+
+func (g idGeneratorStub) GenerateID() (string, error) {
+	return g.id, nil
+}
+
+func TestServer(t *testing.T) {
+	t.Parallel()
+
+	const (
+		username = "user"
+		password = "password"
+		issuer   = "issuer.example.com"
+
+		accessTokenID         = "access-token"
+		accessTokenExpiration = 15 * time.Minute
+	)
+
+	passwordHash, err := bcrypt.GenerateFromPassword([]byte(password), 10)
+	require.NoError(t, err)
+
+	var passwordAuthenticator auth.PasswordAuthenticator = authn.NewUserAuthenticator([]authn.User{
+		{
+			Enabled:      true,
+			Username:     username,
+			PasswordHash: string(passwordHash),
+		},
+	})
+
+	signingKey, err := libtrust.LoadKeyFile("token/jwt/testdata/private.pem")
+	require.NoError(t, err)
+
+	now := time.UnixMicro(1257894000000)
+	clock := clockwork.NewFakeClockAt(now)
+
+	accessTokenIssuer := jwt.NewAccessTokenIssuer(
+		issuer,
+		signingKey,
+		accessTokenExpiration,
+		jwt.WithClock(clock),
+		jwt.WithIDGenerator(idGeneratorStub{accessTokenID}),
+	)
+
+	var refreshTokenIssuer auth.RefreshTokenIssuer = jwt.NewRefreshTokenIssuer(
+		issuer,
+		signingKey,
+		jwt.WithClock(clock),
+	)
+
+	refreshTokenVerifier, ok := refreshTokenIssuer.(authn.RefreshTokenVerifier)
+	if !ok {
+		t.Fatal("refresh token issuer cannot verify refresh tokens")
+	}
+
+	subjectRepository, ok := passwordAuthenticator.(authn.SubjectRepository)
+	if !ok {
+		t.Fatal("password authenticator should also serve as a subject repository")
+	}
+
+	refreshTokenAuthenticator := authn.NewRefreshTokenAuthenticator(refreshTokenVerifier, subjectRepository)
+
+	tokenIssuer := auth.TokenIssuer{
+		AccessTokenIssuer:  accessTokenIssuer,
+		RefreshTokenIssuer: refreshTokenIssuer,
+	}
+
+	authenticator := auth.Authenticator{
+		PasswordAuthenticator:     passwordAuthenticator,
+		RefreshTokenAuthenticator: refreshTokenAuthenticator,
+	}
+
+	authorizer := authz.NewDefaultAuthorizer(authz.NewDefaultRepositoryAuthorizer(true), true)
+
+	service := auth.TokenServiceImpl{
+		Authenticator: authenticator,
+		Authorizer:    authorizer,
+		TokenIssuer:   tokenIssuer,
+	}
+
+	server := auth.TokenServer{
+		Service: service,
+		Logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	router := http.NewServeMux()
+	router.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			server.TokenHandler(w, r)
+
+		case http.MethodPost:
+			server.OAuth2Handler(w, r)
+
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
+	httpServer := httptest.NewServer(router)
+
+	t.Run("TokenHandler", func(t *testing.T) {
+		t.Parallel()
+
+		request, err := http.NewRequest(http.MethodGet, httpServer.URL+"/token", nil)
+		require.NoError(t, err)
+
+		request.SetBasicAuth("user", "password")
+
+		query := request.URL.Query()
+
+		query.Add("service", "service.example.com")
+		query.Add("client_id", "test")
+
+		request.URL.RawQuery = query.Encode()
+
+		testCases := []struct {
+			name            string
+			requestModifier func(request *http.Request)
+			expected        auth.TokenResponse
+		}{
+			{
+				name: "OK",
+				expected: auth.TokenResponse{
+					Token:        "eyJhbGciOiJSUzI1NiIsImp3ayI6eyJlIjoiQVFBQiIsImtpZCI6IjdCVE06NllVRDpYSE00OjRNWUY6Qk1RWTo2N05YOkFTWVE6VVVBRjo2N1FaOlA3SjY6SktJMjpaT0FBIiwia3R5IjoiUlNBIiwibiI6Ind0bDROcC1YM3Z0cUotZU1oaXc5SWhkRzkyclR5Ukg1c05QVmZsZmZGUHlvZnMyLWtJT0R2bVlOWmFwckRMNHlBU2lvR2k2SkFHamlIcVV5d1JyMUtmTGhsX3RpWGt3YndNalBkZmxwUURuMXpjTC1uWjdkRU1VZVU4WTN0ekN3TVg2bHBVLVd2MDFmNERHNk85eFAzQXJnN0lCNVM0ZmdTXzhCTE5tREhZaUZmSFlzSHBhMFI2Wk10UV9VcG9yTXJDcDlnR0VaYkswbkVnTnZyWTFCel9ZRUtRUFZZNUxRTTdfZFoxMWcwS3hibGpBa3hmZnVoY0RUNE9rN1FTdnRGWHVTbFBINktNbDdtYjRJaERkaHRzbHU3YnExV3lkdmEwSmtwajQ5QlFuci13VkJHZU5ROFJHSUhXaGJqWE5uNzVMdF9rNGZCOUxnRGViQmRTNkpiSUlEUUNheHU3dmpnUE9EN2tDcUVxRVFYR0VjMHdzNlZ3MlAzLUF0NXhzNHJnVFhNYVU4NmdpVXExVXFGOE0zWFRDcEtXLTgyaHN6NjRIZk1IVUNpbVpiX2pnM205N3A2Wm9oU0tSaHlSWjRyLW05U0hzMnVBSXJkZmYzOGhLcEVGUWJCTWs1SkN5a05sTDViQWxNbjItZmpQZHdjMV9TWi1Db3hIQjlrVlhoZTRIRTdYU185bXJhTUdwZlVEOGY0OTBwZFZOVkd2NHVyenJSMDMxZ3RRbzg4SWRsb2ZkRTBGOFpBQWp6a3dUS1c3WGRpMzJXTUdRNlE1b3F6amxfc1V2OUV4Qy1pc2R6MklHX3RHU184M0gxN1N0RERsd0Jpa21iMEYxQUZNM2s2RzB1SzhzVFg5RElhS1pEVXFJU1BrM1ZaV1JCR0s1N3l1MEk5S3haeFRVIn0sInR5cCI6IkpXVCJ9.eyJpc3MiOiJpc3N1ZXIuZXhhbXBsZS5jb20iLCJzdWIiOiJ1c2VyIiwiYXVkIjpbInNlcnZpY2UuZXhhbXBsZS5jb20iXSwiZXhwIjoxMjU4Nzk0LCJuYmYiOjEyNTc4OTQsImlhdCI6MTI1Nzg5NCwianRpIjoiYWNjZXNzLXRva2VuIiwiYWNjZXNzIjpbXX0.iOWJdvCnT5r7XyA4nftdMqdJ9GVRA7-R81HCJpG0DZK94ktt5158DXm5nGhtIsmjfu398HyP3JBOjNcJ0kgIssGILXDxBXTa3J_k85IJYS9hCuRAlwhFTTjwO-3HRmVyKKIgkesrMZL4jCYzai1dtOUbHj6WQM8EC82UeoGxZP3YOQep8z2mveS7_N2xob2fQnXBdSCW8vGO6hvHlS_LPWd0K_slzAtKV_3wKGexOGMyKyB4SVi_7mTAfhyOKtof-rnHVBtFJmpLpghFY8jOTV-tpt3kLtdw_d7RfJSv79uqzuD_VqYxG1jQB65KNqSmXl32xt1-Mv3saxjDTnewn0HnJU00kdk-iTjErgqtC2PhgGG5lBHn0b2fbXZ9-NWQ8qQVOtM1jZMBknWKi0NpEtRon7lXKUpdBxvJW_8LKlFyvcmQzkg7D8VwYQ2mg1VNOj1jpP2a3bHcCgSvobTxcaxG8i4YLl8rwN-LrV5JVWIcAjcwUPlL6Sdfk8vCpRWAD3XY2CmccMRIlvqU0VnVkr2iE9o6Y5Cpbm-acivHMO8dj1rv7pkZmTuRGktgq2kTUyZ6f-pg_0S9eLMpzGX9Ek_iCssZaS8z179aw5r-_r1v8TWImjfNEitC9hOaJcE3XifEuzIKLnlJwSzmi3gy1M5lfQB5_SeJimycbGfMy5A",
+					RefreshToken: "",
+					ExpiresIn:    900,
+				},
+			},
+			{
+				name: "online access",
+				requestModifier: func(request *http.Request) {
+					query := request.URL.Query()
+
+					query.Add("offline_token", "false")
+
+					request.URL.RawQuery = query.Encode()
+				},
+				expected: auth.TokenResponse{
+					Token:        "eyJhbGciOiJSUzI1NiIsImp3ayI6eyJlIjoiQVFBQiIsImtpZCI6IjdCVE06NllVRDpYSE00OjRNWUY6Qk1RWTo2N05YOkFTWVE6VVVBRjo2N1FaOlA3SjY6SktJMjpaT0FBIiwia3R5IjoiUlNBIiwibiI6Ind0bDROcC1YM3Z0cUotZU1oaXc5SWhkRzkyclR5Ukg1c05QVmZsZmZGUHlvZnMyLWtJT0R2bVlOWmFwckRMNHlBU2lvR2k2SkFHamlIcVV5d1JyMUtmTGhsX3RpWGt3YndNalBkZmxwUURuMXpjTC1uWjdkRU1VZVU4WTN0ekN3TVg2bHBVLVd2MDFmNERHNk85eFAzQXJnN0lCNVM0ZmdTXzhCTE5tREhZaUZmSFlzSHBhMFI2Wk10UV9VcG9yTXJDcDlnR0VaYkswbkVnTnZyWTFCel9ZRUtRUFZZNUxRTTdfZFoxMWcwS3hibGpBa3hmZnVoY0RUNE9rN1FTdnRGWHVTbFBINktNbDdtYjRJaERkaHRzbHU3YnExV3lkdmEwSmtwajQ5QlFuci13VkJHZU5ROFJHSUhXaGJqWE5uNzVMdF9rNGZCOUxnRGViQmRTNkpiSUlEUUNheHU3dmpnUE9EN2tDcUVxRVFYR0VjMHdzNlZ3MlAzLUF0NXhzNHJnVFhNYVU4NmdpVXExVXFGOE0zWFRDcEtXLTgyaHN6NjRIZk1IVUNpbVpiX2pnM205N3A2Wm9oU0tSaHlSWjRyLW05U0hzMnVBSXJkZmYzOGhLcEVGUWJCTWs1SkN5a05sTDViQWxNbjItZmpQZHdjMV9TWi1Db3hIQjlrVlhoZTRIRTdYU185bXJhTUdwZlVEOGY0OTBwZFZOVkd2NHVyenJSMDMxZ3RRbzg4SWRsb2ZkRTBGOFpBQWp6a3dUS1c3WGRpMzJXTUdRNlE1b3F6amxfc1V2OUV4Qy1pc2R6MklHX3RHU184M0gxN1N0RERsd0Jpa21iMEYxQUZNM2s2RzB1SzhzVFg5RElhS1pEVXFJU1BrM1ZaV1JCR0s1N3l1MEk5S3haeFRVIn0sInR5cCI6IkpXVCJ9.eyJpc3MiOiJpc3N1ZXIuZXhhbXBsZS5jb20iLCJzdWIiOiJ1c2VyIiwiYXVkIjpbInNlcnZpY2UuZXhhbXBsZS5jb20iXSwiZXhwIjoxMjU4Nzk0LCJuYmYiOjEyNTc4OTQsImlhdCI6MTI1Nzg5NCwianRpIjoiYWNjZXNzLXRva2VuIiwiYWNjZXNzIjpbXX0.iOWJdvCnT5r7XyA4nftdMqdJ9GVRA7-R81HCJpG0DZK94ktt5158DXm5nGhtIsmjfu398HyP3JBOjNcJ0kgIssGILXDxBXTa3J_k85IJYS9hCuRAlwhFTTjwO-3HRmVyKKIgkesrMZL4jCYzai1dtOUbHj6WQM8EC82UeoGxZP3YOQep8z2mveS7_N2xob2fQnXBdSCW8vGO6hvHlS_LPWd0K_slzAtKV_3wKGexOGMyKyB4SVi_7mTAfhyOKtof-rnHVBtFJmpLpghFY8jOTV-tpt3kLtdw_d7RfJSv79uqzuD_VqYxG1jQB65KNqSmXl32xt1-Mv3saxjDTnewn0HnJU00kdk-iTjErgqtC2PhgGG5lBHn0b2fbXZ9-NWQ8qQVOtM1jZMBknWKi0NpEtRon7lXKUpdBxvJW_8LKlFyvcmQzkg7D8VwYQ2mg1VNOj1jpP2a3bHcCgSvobTxcaxG8i4YLl8rwN-LrV5JVWIcAjcwUPlL6Sdfk8vCpRWAD3XY2CmccMRIlvqU0VnVkr2iE9o6Y5Cpbm-acivHMO8dj1rv7pkZmTuRGktgq2kTUyZ6f-pg_0S9eLMpzGX9Ek_iCssZaS8z179aw5r-_r1v8TWImjfNEitC9hOaJcE3XifEuzIKLnlJwSzmi3gy1M5lfQB5_SeJimycbGfMy5A",
+					RefreshToken: "",
+					ExpiresIn:    900,
+				},
+			},
+			{
+				name: "offline access",
+				requestModifier: func(request *http.Request) {
+					query := request.URL.Query()
+
+					query.Add("offline_token", "true")
+
+					request.URL.RawQuery = query.Encode()
+				},
+				expected: auth.TokenResponse{
+					Token:        "eyJhbGciOiJSUzI1NiIsImp3ayI6eyJlIjoiQVFBQiIsImtpZCI6IjdCVE06NllVRDpYSE00OjRNWUY6Qk1RWTo2N05YOkFTWVE6VVVBRjo2N1FaOlA3SjY6SktJMjpaT0FBIiwia3R5IjoiUlNBIiwibiI6Ind0bDROcC1YM3Z0cUotZU1oaXc5SWhkRzkyclR5Ukg1c05QVmZsZmZGUHlvZnMyLWtJT0R2bVlOWmFwckRMNHlBU2lvR2k2SkFHamlIcVV5d1JyMUtmTGhsX3RpWGt3YndNalBkZmxwUURuMXpjTC1uWjdkRU1VZVU4WTN0ekN3TVg2bHBVLVd2MDFmNERHNk85eFAzQXJnN0lCNVM0ZmdTXzhCTE5tREhZaUZmSFlzSHBhMFI2Wk10UV9VcG9yTXJDcDlnR0VaYkswbkVnTnZyWTFCel9ZRUtRUFZZNUxRTTdfZFoxMWcwS3hibGpBa3hmZnVoY0RUNE9rN1FTdnRGWHVTbFBINktNbDdtYjRJaERkaHRzbHU3YnExV3lkdmEwSmtwajQ5QlFuci13VkJHZU5ROFJHSUhXaGJqWE5uNzVMdF9rNGZCOUxnRGViQmRTNkpiSUlEUUNheHU3dmpnUE9EN2tDcUVxRVFYR0VjMHdzNlZ3MlAzLUF0NXhzNHJnVFhNYVU4NmdpVXExVXFGOE0zWFRDcEtXLTgyaHN6NjRIZk1IVUNpbVpiX2pnM205N3A2Wm9oU0tSaHlSWjRyLW05U0hzMnVBSXJkZmYzOGhLcEVGUWJCTWs1SkN5a05sTDViQWxNbjItZmpQZHdjMV9TWi1Db3hIQjlrVlhoZTRIRTdYU185bXJhTUdwZlVEOGY0OTBwZFZOVkd2NHVyenJSMDMxZ3RRbzg4SWRsb2ZkRTBGOFpBQWp6a3dUS1c3WGRpMzJXTUdRNlE1b3F6amxfc1V2OUV4Qy1pc2R6MklHX3RHU184M0gxN1N0RERsd0Jpa21iMEYxQUZNM2s2RzB1SzhzVFg5RElhS1pEVXFJU1BrM1ZaV1JCR0s1N3l1MEk5S3haeFRVIn0sInR5cCI6IkpXVCJ9.eyJpc3MiOiJpc3N1ZXIuZXhhbXBsZS5jb20iLCJzdWIiOiJ1c2VyIiwiYXVkIjpbInNlcnZpY2UuZXhhbXBsZS5jb20iXSwiZXhwIjoxMjU4Nzk0LCJuYmYiOjEyNTc4OTQsImlhdCI6MTI1Nzg5NCwianRpIjoiYWNjZXNzLXRva2VuIiwiYWNjZXNzIjpbXX0.iOWJdvCnT5r7XyA4nftdMqdJ9GVRA7-R81HCJpG0DZK94ktt5158DXm5nGhtIsmjfu398HyP3JBOjNcJ0kgIssGILXDxBXTa3J_k85IJYS9hCuRAlwhFTTjwO-3HRmVyKKIgkesrMZL4jCYzai1dtOUbHj6WQM8EC82UeoGxZP3YOQep8z2mveS7_N2xob2fQnXBdSCW8vGO6hvHlS_LPWd0K_slzAtKV_3wKGexOGMyKyB4SVi_7mTAfhyOKtof-rnHVBtFJmpLpghFY8jOTV-tpt3kLtdw_d7RfJSv79uqzuD_VqYxG1jQB65KNqSmXl32xt1-Mv3saxjDTnewn0HnJU00kdk-iTjErgqtC2PhgGG5lBHn0b2fbXZ9-NWQ8qQVOtM1jZMBknWKi0NpEtRon7lXKUpdBxvJW_8LKlFyvcmQzkg7D8VwYQ2mg1VNOj1jpP2a3bHcCgSvobTxcaxG8i4YLl8rwN-LrV5JVWIcAjcwUPlL6Sdfk8vCpRWAD3XY2CmccMRIlvqU0VnVkr2iE9o6Y5Cpbm-acivHMO8dj1rv7pkZmTuRGktgq2kTUyZ6f-pg_0S9eLMpzGX9Ek_iCssZaS8z179aw5r-_r1v8TWImjfNEitC9hOaJcE3XifEuzIKLnlJwSzmi3gy1M5lfQB5_SeJimycbGfMy5A",
+					RefreshToken: "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJpc3N1ZXIuZXhhbXBsZS5jb20iLCJzdWIiOiJ1c2VyIiwiYXVkIjpbInNlcnZpY2UuZXhhbXBsZS5jb20iXSwibmJmIjoxMjU3ODk0LCJpYXQiOjEyNTc4OTR9.moFJDxmmQX4f00EBaHapXQS9PzjVBddQ71Wy9Zem8NEryWj7LGt28eJQYBxCxHHBD4jzZDl4d8H8Rv2Slt4xWAYOFwweQShiDh3Bz8dBxOlya0ZEj-V3N6lldSaJVOBhY6CygHE8ucqZVymCTBsuax92nZqX0-15IltVorcglWb3jkofuvMITHaE4hV1r0y4bqStq6lFgrfbBb6DQUeHqnqITvD87hrX6qBNFpI96mqbrxJtIQTSzDhX7SgFqiiKbCqMHAnIQnfM0Zs_Pc0XM3SrAuCfoSIVuc9otliHR17MjZI5qvvAkrtphjdjnJwUc_6Dk3h1-0-HpsvE-7CPNiThejSlHPC8f3-FMQ87tb8691VdQPQCW8PESbcfR7gidvpcFbb1zH0-gz0umIE58A_2qcNQFHZLmNS5_vUKxjfTTh9P8w4-_uFSW6QQa2OGmBxnS0IQH6l5sr7O0iraONShG0YYo5bWAqVALiQpH6LDeWSx0uFWSjerC0Tefl3ZV9Ek2-lQ8xfz-f0x4VegAenwPsbk8O3ihZbgg9v5nhFfUdbWkXUzyI3VW-tw-XIdrYaMXzObDCnLvesp_-3hvW-dNt40hRMnlULgsa-MpGv6x-ibPkiFiS0VCbtkAPVyUrfWcLPtV6Gn0AINqQC0P4bft9LPPRTfLYfhlct0hac",
+					ExpiresIn:    900,
+				},
+			},
+			{
+				name: "empty scope",
+				requestModifier: func(request *http.Request) {
+					query := request.URL.Query()
+
+					query.Add("scope", "")
+
+					request.URL.RawQuery = query.Encode()
+				},
+				expected: auth.TokenResponse{
+					Token:        "eyJhbGciOiJSUzI1NiIsImp3ayI6eyJlIjoiQVFBQiIsImtpZCI6IjdCVE06NllVRDpYSE00OjRNWUY6Qk1RWTo2N05YOkFTWVE6VVVBRjo2N1FaOlA3SjY6SktJMjpaT0FBIiwia3R5IjoiUlNBIiwibiI6Ind0bDROcC1YM3Z0cUotZU1oaXc5SWhkRzkyclR5Ukg1c05QVmZsZmZGUHlvZnMyLWtJT0R2bVlOWmFwckRMNHlBU2lvR2k2SkFHamlIcVV5d1JyMUtmTGhsX3RpWGt3YndNalBkZmxwUURuMXpjTC1uWjdkRU1VZVU4WTN0ekN3TVg2bHBVLVd2MDFmNERHNk85eFAzQXJnN0lCNVM0ZmdTXzhCTE5tREhZaUZmSFlzSHBhMFI2Wk10UV9VcG9yTXJDcDlnR0VaYkswbkVnTnZyWTFCel9ZRUtRUFZZNUxRTTdfZFoxMWcwS3hibGpBa3hmZnVoY0RUNE9rN1FTdnRGWHVTbFBINktNbDdtYjRJaERkaHRzbHU3YnExV3lkdmEwSmtwajQ5QlFuci13VkJHZU5ROFJHSUhXaGJqWE5uNzVMdF9rNGZCOUxnRGViQmRTNkpiSUlEUUNheHU3dmpnUE9EN2tDcUVxRVFYR0VjMHdzNlZ3MlAzLUF0NXhzNHJnVFhNYVU4NmdpVXExVXFGOE0zWFRDcEtXLTgyaHN6NjRIZk1IVUNpbVpiX2pnM205N3A2Wm9oU0tSaHlSWjRyLW05U0hzMnVBSXJkZmYzOGhLcEVGUWJCTWs1SkN5a05sTDViQWxNbjItZmpQZHdjMV9TWi1Db3hIQjlrVlhoZTRIRTdYU185bXJhTUdwZlVEOGY0OTBwZFZOVkd2NHVyenJSMDMxZ3RRbzg4SWRsb2ZkRTBGOFpBQWp6a3dUS1c3WGRpMzJXTUdRNlE1b3F6amxfc1V2OUV4Qy1pc2R6MklHX3RHU184M0gxN1N0RERsd0Jpa21iMEYxQUZNM2s2RzB1SzhzVFg5RElhS1pEVXFJU1BrM1ZaV1JCR0s1N3l1MEk5S3haeFRVIn0sInR5cCI6IkpXVCJ9.eyJpc3MiOiJpc3N1ZXIuZXhhbXBsZS5jb20iLCJzdWIiOiJ1c2VyIiwiYXVkIjpbInNlcnZpY2UuZXhhbXBsZS5jb20iXSwiZXhwIjoxMjU4Nzk0LCJuYmYiOjEyNTc4OTQsImlhdCI6MTI1Nzg5NCwianRpIjoiYWNjZXNzLXRva2VuIiwiYWNjZXNzIjpbXX0.iOWJdvCnT5r7XyA4nftdMqdJ9GVRA7-R81HCJpG0DZK94ktt5158DXm5nGhtIsmjfu398HyP3JBOjNcJ0kgIssGILXDxBXTa3J_k85IJYS9hCuRAlwhFTTjwO-3HRmVyKKIgkesrMZL4jCYzai1dtOUbHj6WQM8EC82UeoGxZP3YOQep8z2mveS7_N2xob2fQnXBdSCW8vGO6hvHlS_LPWd0K_slzAtKV_3wKGexOGMyKyB4SVi_7mTAfhyOKtof-rnHVBtFJmpLpghFY8jOTV-tpt3kLtdw_d7RfJSv79uqzuD_VqYxG1jQB65KNqSmXl32xt1-Mv3saxjDTnewn0HnJU00kdk-iTjErgqtC2PhgGG5lBHn0b2fbXZ9-NWQ8qQVOtM1jZMBknWKi0NpEtRon7lXKUpdBxvJW_8LKlFyvcmQzkg7D8VwYQ2mg1VNOj1jpP2a3bHcCgSvobTxcaxG8i4YLl8rwN-LrV5JVWIcAjcwUPlL6Sdfk8vCpRWAD3XY2CmccMRIlvqU0VnVkr2iE9o6Y5Cpbm-acivHMO8dj1rv7pkZmTuRGktgq2kTUyZ6f-pg_0S9eLMpzGX9Ek_iCssZaS8z179aw5r-_r1v8TWImjfNEitC9hOaJcE3XifEuzIKLnlJwSzmi3gy1M5lfQB5_SeJimycbGfMy5A",
+					RefreshToken: "",
+					ExpiresIn:    900,
+				},
+			},
+			{
+				name: "non-empty scope with no access",
+				requestModifier: func(request *http.Request) {
+					query := request.URL.Query()
+
+					query.Add("scope", "repository:name:push,pull")
+
+					request.URL.RawQuery = query.Encode()
+				},
+				expected: auth.TokenResponse{
+					Token:        "eyJhbGciOiJSUzI1NiIsImp3ayI6eyJlIjoiQVFBQiIsImtpZCI6IjdCVE06NllVRDpYSE00OjRNWUY6Qk1RWTo2N05YOkFTWVE6VVVBRjo2N1FaOlA3SjY6SktJMjpaT0FBIiwia3R5IjoiUlNBIiwibiI6Ind0bDROcC1YM3Z0cUotZU1oaXc5SWhkRzkyclR5Ukg1c05QVmZsZmZGUHlvZnMyLWtJT0R2bVlOWmFwckRMNHlBU2lvR2k2SkFHamlIcVV5d1JyMUtmTGhsX3RpWGt3YndNalBkZmxwUURuMXpjTC1uWjdkRU1VZVU4WTN0ekN3TVg2bHBVLVd2MDFmNERHNk85eFAzQXJnN0lCNVM0ZmdTXzhCTE5tREhZaUZmSFlzSHBhMFI2Wk10UV9VcG9yTXJDcDlnR0VaYkswbkVnTnZyWTFCel9ZRUtRUFZZNUxRTTdfZFoxMWcwS3hibGpBa3hmZnVoY0RUNE9rN1FTdnRGWHVTbFBINktNbDdtYjRJaERkaHRzbHU3YnExV3lkdmEwSmtwajQ5QlFuci13VkJHZU5ROFJHSUhXaGJqWE5uNzVMdF9rNGZCOUxnRGViQmRTNkpiSUlEUUNheHU3dmpnUE9EN2tDcUVxRVFYR0VjMHdzNlZ3MlAzLUF0NXhzNHJnVFhNYVU4NmdpVXExVXFGOE0zWFRDcEtXLTgyaHN6NjRIZk1IVUNpbVpiX2pnM205N3A2Wm9oU0tSaHlSWjRyLW05U0hzMnVBSXJkZmYzOGhLcEVGUWJCTWs1SkN5a05sTDViQWxNbjItZmpQZHdjMV9TWi1Db3hIQjlrVlhoZTRIRTdYU185bXJhTUdwZlVEOGY0OTBwZFZOVkd2NHVyenJSMDMxZ3RRbzg4SWRsb2ZkRTBGOFpBQWp6a3dUS1c3WGRpMzJXTUdRNlE1b3F6amxfc1V2OUV4Qy1pc2R6MklHX3RHU184M0gxN1N0RERsd0Jpa21iMEYxQUZNM2s2RzB1SzhzVFg5RElhS1pEVXFJU1BrM1ZaV1JCR0s1N3l1MEk5S3haeFRVIn0sInR5cCI6IkpXVCJ9.eyJpc3MiOiJpc3N1ZXIuZXhhbXBsZS5jb20iLCJzdWIiOiJ1c2VyIiwiYXVkIjpbInNlcnZpY2UuZXhhbXBsZS5jb20iXSwiZXhwIjoxMjU4Nzk0LCJuYmYiOjEyNTc4OTQsImlhdCI6MTI1Nzg5NCwianRpIjoiYWNjZXNzLXRva2VuIiwiYWNjZXNzIjpbXX0.iOWJdvCnT5r7XyA4nftdMqdJ9GVRA7-R81HCJpG0DZK94ktt5158DXm5nGhtIsmjfu398HyP3JBOjNcJ0kgIssGILXDxBXTa3J_k85IJYS9hCuRAlwhFTTjwO-3HRmVyKKIgkesrMZL4jCYzai1dtOUbHj6WQM8EC82UeoGxZP3YOQep8z2mveS7_N2xob2fQnXBdSCW8vGO6hvHlS_LPWd0K_slzAtKV_3wKGexOGMyKyB4SVi_7mTAfhyOKtof-rnHVBtFJmpLpghFY8jOTV-tpt3kLtdw_d7RfJSv79uqzuD_VqYxG1jQB65KNqSmXl32xt1-Mv3saxjDTnewn0HnJU00kdk-iTjErgqtC2PhgGG5lBHn0b2fbXZ9-NWQ8qQVOtM1jZMBknWKi0NpEtRon7lXKUpdBxvJW_8LKlFyvcmQzkg7D8VwYQ2mg1VNOj1jpP2a3bHcCgSvobTxcaxG8i4YLl8rwN-LrV5JVWIcAjcwUPlL6Sdfk8vCpRWAD3XY2CmccMRIlvqU0VnVkr2iE9o6Y5Cpbm-acivHMO8dj1rv7pkZmTuRGktgq2kTUyZ6f-pg_0S9eLMpzGX9Ek_iCssZaS8z179aw5r-_r1v8TWImjfNEitC9hOaJcE3XifEuzIKLnlJwSzmi3gy1M5lfQB5_SeJimycbGfMy5A",
+					RefreshToken: "",
+					ExpiresIn:    900,
+				},
+			},
+			{
+				name: "non-empty scope with access",
+				requestModifier: func(request *http.Request) {
+					query := request.URL.Query()
+
+					query.Add("scope", "repository:user/name:push,pull repository:user/name2:push,pull")
+
+					request.URL.RawQuery = query.Encode()
+				},
+				expected: auth.TokenResponse{
+					Token:        "eyJhbGciOiJSUzI1NiIsImp3ayI6eyJlIjoiQVFBQiIsImtpZCI6IjdCVE06NllVRDpYSE00OjRNWUY6Qk1RWTo2N05YOkFTWVE6VVVBRjo2N1FaOlA3SjY6SktJMjpaT0FBIiwia3R5IjoiUlNBIiwibiI6Ind0bDROcC1YM3Z0cUotZU1oaXc5SWhkRzkyclR5Ukg1c05QVmZsZmZGUHlvZnMyLWtJT0R2bVlOWmFwckRMNHlBU2lvR2k2SkFHamlIcVV5d1JyMUtmTGhsX3RpWGt3YndNalBkZmxwUURuMXpjTC1uWjdkRU1VZVU4WTN0ekN3TVg2bHBVLVd2MDFmNERHNk85eFAzQXJnN0lCNVM0ZmdTXzhCTE5tREhZaUZmSFlzSHBhMFI2Wk10UV9VcG9yTXJDcDlnR0VaYkswbkVnTnZyWTFCel9ZRUtRUFZZNUxRTTdfZFoxMWcwS3hibGpBa3hmZnVoY0RUNE9rN1FTdnRGWHVTbFBINktNbDdtYjRJaERkaHRzbHU3YnExV3lkdmEwSmtwajQ5QlFuci13VkJHZU5ROFJHSUhXaGJqWE5uNzVMdF9rNGZCOUxnRGViQmRTNkpiSUlEUUNheHU3dmpnUE9EN2tDcUVxRVFYR0VjMHdzNlZ3MlAzLUF0NXhzNHJnVFhNYVU4NmdpVXExVXFGOE0zWFRDcEtXLTgyaHN6NjRIZk1IVUNpbVpiX2pnM205N3A2Wm9oU0tSaHlSWjRyLW05U0hzMnVBSXJkZmYzOGhLcEVGUWJCTWs1SkN5a05sTDViQWxNbjItZmpQZHdjMV9TWi1Db3hIQjlrVlhoZTRIRTdYU185bXJhTUdwZlVEOGY0OTBwZFZOVkd2NHVyenJSMDMxZ3RRbzg4SWRsb2ZkRTBGOFpBQWp6a3dUS1c3WGRpMzJXTUdRNlE1b3F6amxfc1V2OUV4Qy1pc2R6MklHX3RHU184M0gxN1N0RERsd0Jpa21iMEYxQUZNM2s2RzB1SzhzVFg5RElhS1pEVXFJU1BrM1ZaV1JCR0s1N3l1MEk5S3haeFRVIn0sInR5cCI6IkpXVCJ9.eyJpc3MiOiJpc3N1ZXIuZXhhbXBsZS5jb20iLCJzdWIiOiJ1c2VyIiwiYXVkIjpbInNlcnZpY2UuZXhhbXBsZS5jb20iXSwiZXhwIjoxMjU4Nzk0LCJuYmYiOjEyNTc4OTQsImlhdCI6MTI1Nzg5NCwianRpIjoiYWNjZXNzLXRva2VuIiwiYWNjZXNzIjpbeyJ0eXBlIjoicmVwb3NpdG9yeSIsImNsYXNzIjoiIiwibmFtZSI6InVzZXIvbmFtZSIsImFjdGlvbnMiOlsicHVzaCIsInB1bGwgcmVwb3NpdG9yeTp1c2VyL25hbWUyOnB1c2giLCJwdWxsIl19XX0.LEjm_hWmjrSYPRcpo8Qccd-F8haz1ZLAZviIyB6br0Nsdx1UR9_kxELIT9P0BMvkus6fSF8Uo2zFyNF16_aU_a4KDOfsvYqyrTM66iD6MzWGzozDLlXOSocY6CQ6kb3EOmy45JGkRR0pGTcoVkM1suesN4GCvKShFY0pL5M7VoBi5vBx3EjcWeFO4Hl4MoHkAtNlbgG8pVodoFN-L6a14BTAmqZDGsv3h0pKCYOeu3FUcBTjYIVJtZie7nr5S1Txu2VxaDogqxZQwpwHQtiRvCFrZbavBDFTig4e4kcPOUqCROI7x1ZFqNXuSW9UJ6ZAzc6JbFfp55owam_hcQJ3Qc9TenMArLIkBqayjWCzaRyM_LGpyMLNjekIiL5jIVwZcIUZTwTSZD2wdZye5HxoDqZG1OvvuHgV0-ATxc32xR0G8eHpb74pMfpxwo8aHPBahZRiTD0pyW6ThNRlWBq_B3PRSn1EjEXrZPI7Na_xxdHtQc4NU0LlgjqZ8yYnLqddnLK-jMtWiU-XZ01EnImxN_KQ4AhEsD8pRvJw1bAEhUCn81mAB-fEVtHP22YOitZa_g9Ya6Eg0z2TKw1DAn746AN4UJlsDMzEiSV469W-HnrbbkEMEBVrDLGP-G9k-k4ZwpO76QpyVJgb_FWs3jkL-4m-ClxBYmOKiK-JE7R0Us0",
+					RefreshToken: "",
+					ExpiresIn:    900,
+				},
+			},
+			{
+				name: "non-empty scope with mixed access",
+				requestModifier: func(request *http.Request) {
+					query := request.URL.Query()
+
+					query.Add("scope", "repository:name:push,pull repository:user/name:push,pull repository:user/name2:push,pull")
+
+					request.URL.RawQuery = query.Encode()
+				},
+				expected: auth.TokenResponse{
+					Token:        "eyJhbGciOiJSUzI1NiIsImp3ayI6eyJlIjoiQVFBQiIsImtpZCI6IjdCVE06NllVRDpYSE00OjRNWUY6Qk1RWTo2N05YOkFTWVE6VVVBRjo2N1FaOlA3SjY6SktJMjpaT0FBIiwia3R5IjoiUlNBIiwibiI6Ind0bDROcC1YM3Z0cUotZU1oaXc5SWhkRzkyclR5Ukg1c05QVmZsZmZGUHlvZnMyLWtJT0R2bVlOWmFwckRMNHlBU2lvR2k2SkFHamlIcVV5d1JyMUtmTGhsX3RpWGt3YndNalBkZmxwUURuMXpjTC1uWjdkRU1VZVU4WTN0ekN3TVg2bHBVLVd2MDFmNERHNk85eFAzQXJnN0lCNVM0ZmdTXzhCTE5tREhZaUZmSFlzSHBhMFI2Wk10UV9VcG9yTXJDcDlnR0VaYkswbkVnTnZyWTFCel9ZRUtRUFZZNUxRTTdfZFoxMWcwS3hibGpBa3hmZnVoY0RUNE9rN1FTdnRGWHVTbFBINktNbDdtYjRJaERkaHRzbHU3YnExV3lkdmEwSmtwajQ5QlFuci13VkJHZU5ROFJHSUhXaGJqWE5uNzVMdF9rNGZCOUxnRGViQmRTNkpiSUlEUUNheHU3dmpnUE9EN2tDcUVxRVFYR0VjMHdzNlZ3MlAzLUF0NXhzNHJnVFhNYVU4NmdpVXExVXFGOE0zWFRDcEtXLTgyaHN6NjRIZk1IVUNpbVpiX2pnM205N3A2Wm9oU0tSaHlSWjRyLW05U0hzMnVBSXJkZmYzOGhLcEVGUWJCTWs1SkN5a05sTDViQWxNbjItZmpQZHdjMV9TWi1Db3hIQjlrVlhoZTRIRTdYU185bXJhTUdwZlVEOGY0OTBwZFZOVkd2NHVyenJSMDMxZ3RRbzg4SWRsb2ZkRTBGOFpBQWp6a3dUS1c3WGRpMzJXTUdRNlE1b3F6amxfc1V2OUV4Qy1pc2R6MklHX3RHU184M0gxN1N0RERsd0Jpa21iMEYxQUZNM2s2RzB1SzhzVFg5RElhS1pEVXFJU1BrM1ZaV1JCR0s1N3l1MEk5S3haeFRVIn0sInR5cCI6IkpXVCJ9.eyJpc3MiOiJpc3N1ZXIuZXhhbXBsZS5jb20iLCJzdWIiOiJ1c2VyIiwiYXVkIjpbInNlcnZpY2UuZXhhbXBsZS5jb20iXSwiZXhwIjoxMjU4Nzk0LCJuYmYiOjEyNTc4OTQsImlhdCI6MTI1Nzg5NCwianRpIjoiYWNjZXNzLXRva2VuIiwiYWNjZXNzIjpbXX0.iOWJdvCnT5r7XyA4nftdMqdJ9GVRA7-R81HCJpG0DZK94ktt5158DXm5nGhtIsmjfu398HyP3JBOjNcJ0kgIssGILXDxBXTa3J_k85IJYS9hCuRAlwhFTTjwO-3HRmVyKKIgkesrMZL4jCYzai1dtOUbHj6WQM8EC82UeoGxZP3YOQep8z2mveS7_N2xob2fQnXBdSCW8vGO6hvHlS_LPWd0K_slzAtKV_3wKGexOGMyKyB4SVi_7mTAfhyOKtof-rnHVBtFJmpLpghFY8jOTV-tpt3kLtdw_d7RfJSv79uqzuD_VqYxG1jQB65KNqSmXl32xt1-Mv3saxjDTnewn0HnJU00kdk-iTjErgqtC2PhgGG5lBHn0b2fbXZ9-NWQ8qQVOtM1jZMBknWKi0NpEtRon7lXKUpdBxvJW_8LKlFyvcmQzkg7D8VwYQ2mg1VNOj1jpP2a3bHcCgSvobTxcaxG8i4YLl8rwN-LrV5JVWIcAjcwUPlL6Sdfk8vCpRWAD3XY2CmccMRIlvqU0VnVkr2iE9o6Y5Cpbm-acivHMO8dj1rv7pkZmTuRGktgq2kTUyZ6f-pg_0S9eLMpzGX9Ek_iCssZaS8z179aw5r-_r1v8TWImjfNEitC9hOaJcE3XifEuzIKLnlJwSzmi3gy1M5lfQB5_SeJimycbGfMy5A",
+					RefreshToken: "",
+					ExpiresIn:    900,
+				},
+			},
+		}
+
+		for _, testCase := range testCases {
+			testCase := testCase
+
+			t.Run(testCase.name, func(t *testing.T) {
+				request := request.Clone(context.Background())
+
+				if testCase.requestModifier != nil {
+					testCase.requestModifier(request)
+				}
+
+				response, err := httpServer.Client().Do(request)
+				require.NoError(t, err)
+
+				defer response.Body.Close()
+
+				require.Equal(t, http.StatusOK, response.StatusCode)
+
+				var actual auth.TokenResponse
+
+				err = json.NewDecoder(response.Body).Decode(&actual)
+				require.NoError(t, err)
+
+				assert.Equal(t, testCase.expected, actual)
+			})
+		}
+	})
+
+	t.Run("Oauth2Handler", func(t *testing.T) {
+		t.Parallel()
+
+		request, err := http.NewRequest(http.MethodPost, httpServer.URL+"/token", nil)
+		require.NoError(t, err)
+
+		request.Header.Add("Content-Type", "application/x-www-form-urlencoded")
+
+		form := url.Values{}
+		form.Add("service", "service.example.com")
+		form.Add("client_id", "test")
+
+		testCases := []struct {
+			name         string
+			formModifier func(form url.Values)
+			expected     auth.OAuth2Response
+		}{
+			{
+				name: "password grant",
+				formModifier: func(form url.Values) {
+					form.Add("grant_type", "password")
+					form.Add("username", "user")
+					form.Add("password", "password")
+				},
+				expected: auth.OAuth2Response{
+					Token:        "eyJhbGciOiJSUzI1NiIsImp3ayI6eyJlIjoiQVFBQiIsImtpZCI6IjdCVE06NllVRDpYSE00OjRNWUY6Qk1RWTo2N05YOkFTWVE6VVVBRjo2N1FaOlA3SjY6SktJMjpaT0FBIiwia3R5IjoiUlNBIiwibiI6Ind0bDROcC1YM3Z0cUotZU1oaXc5SWhkRzkyclR5Ukg1c05QVmZsZmZGUHlvZnMyLWtJT0R2bVlOWmFwckRMNHlBU2lvR2k2SkFHamlIcVV5d1JyMUtmTGhsX3RpWGt3YndNalBkZmxwUURuMXpjTC1uWjdkRU1VZVU4WTN0ekN3TVg2bHBVLVd2MDFmNERHNk85eFAzQXJnN0lCNVM0ZmdTXzhCTE5tREhZaUZmSFlzSHBhMFI2Wk10UV9VcG9yTXJDcDlnR0VaYkswbkVnTnZyWTFCel9ZRUtRUFZZNUxRTTdfZFoxMWcwS3hibGpBa3hmZnVoY0RUNE9rN1FTdnRGWHVTbFBINktNbDdtYjRJaERkaHRzbHU3YnExV3lkdmEwSmtwajQ5QlFuci13VkJHZU5ROFJHSUhXaGJqWE5uNzVMdF9rNGZCOUxnRGViQmRTNkpiSUlEUUNheHU3dmpnUE9EN2tDcUVxRVFYR0VjMHdzNlZ3MlAzLUF0NXhzNHJnVFhNYVU4NmdpVXExVXFGOE0zWFRDcEtXLTgyaHN6NjRIZk1IVUNpbVpiX2pnM205N3A2Wm9oU0tSaHlSWjRyLW05U0hzMnVBSXJkZmYzOGhLcEVGUWJCTWs1SkN5a05sTDViQWxNbjItZmpQZHdjMV9TWi1Db3hIQjlrVlhoZTRIRTdYU185bXJhTUdwZlVEOGY0OTBwZFZOVkd2NHVyenJSMDMxZ3RRbzg4SWRsb2ZkRTBGOFpBQWp6a3dUS1c3WGRpMzJXTUdRNlE1b3F6amxfc1V2OUV4Qy1pc2R6MklHX3RHU184M0gxN1N0RERsd0Jpa21iMEYxQUZNM2s2RzB1SzhzVFg5RElhS1pEVXFJU1BrM1ZaV1JCR0s1N3l1MEk5S3haeFRVIn0sInR5cCI6IkpXVCJ9.eyJpc3MiOiJpc3N1ZXIuZXhhbXBsZS5jb20iLCJzdWIiOiJ1c2VyIiwiYXVkIjpbInNlcnZpY2UuZXhhbXBsZS5jb20iXSwiZXhwIjoxMjU4Nzk0LCJuYmYiOjEyNTc4OTQsImlhdCI6MTI1Nzg5NCwianRpIjoiYWNjZXNzLXRva2VuIiwiYWNjZXNzIjpbXX0.iOWJdvCnT5r7XyA4nftdMqdJ9GVRA7-R81HCJpG0DZK94ktt5158DXm5nGhtIsmjfu398HyP3JBOjNcJ0kgIssGILXDxBXTa3J_k85IJYS9hCuRAlwhFTTjwO-3HRmVyKKIgkesrMZL4jCYzai1dtOUbHj6WQM8EC82UeoGxZP3YOQep8z2mveS7_N2xob2fQnXBdSCW8vGO6hvHlS_LPWd0K_slzAtKV_3wKGexOGMyKyB4SVi_7mTAfhyOKtof-rnHVBtFJmpLpghFY8jOTV-tpt3kLtdw_d7RfJSv79uqzuD_VqYxG1jQB65KNqSmXl32xt1-Mv3saxjDTnewn0HnJU00kdk-iTjErgqtC2PhgGG5lBHn0b2fbXZ9-NWQ8qQVOtM1jZMBknWKi0NpEtRon7lXKUpdBxvJW_8LKlFyvcmQzkg7D8VwYQ2mg1VNOj1jpP2a3bHcCgSvobTxcaxG8i4YLl8rwN-LrV5JVWIcAjcwUPlL6Sdfk8vCpRWAD3XY2CmccMRIlvqU0VnVkr2iE9o6Y5Cpbm-acivHMO8dj1rv7pkZmTuRGktgq2kTUyZ6f-pg_0S9eLMpzGX9Ek_iCssZaS8z179aw5r-_r1v8TWImjfNEitC9hOaJcE3XifEuzIKLnlJwSzmi3gy1M5lfQB5_SeJimycbGfMy5A",
+					RefreshToken: "",
+					ExpiresIn:    900,
+					IssuedAt:     "1970-01-15T14:24:54+01:00",
+				},
+			},
+			{
+				name: "refresh token grant",
+				formModifier: func(form url.Values) {
+					form.Add("grant_type", "refresh_token")
+					form.Add("refresh_token", "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJpc3N1ZXIuZXhhbXBsZS5jb20iLCJzdWIiOiJ1c2VyIiwiYXVkIjpbInNlcnZpY2UuZXhhbXBsZS5jb20iXSwibmJmIjoxMjU3ODk0LCJpYXQiOjEyNTc4OTR9.moFJDxmmQX4f00EBaHapXQS9PzjVBddQ71Wy9Zem8NEryWj7LGt28eJQYBxCxHHBD4jzZDl4d8H8Rv2Slt4xWAYOFwweQShiDh3Bz8dBxOlya0ZEj-V3N6lldSaJVOBhY6CygHE8ucqZVymCTBsuax92nZqX0-15IltVorcglWb3jkofuvMITHaE4hV1r0y4bqStq6lFgrfbBb6DQUeHqnqITvD87hrX6qBNFpI96mqbrxJtIQTSzDhX7SgFqiiKbCqMHAnIQnfM0Zs_Pc0XM3SrAuCfoSIVuc9otliHR17MjZI5qvvAkrtphjdjnJwUc_6Dk3h1-0-HpsvE-7CPNiThejSlHPC8f3-FMQ87tb8691VdQPQCW8PESbcfR7gidvpcFbb1zH0-gz0umIE58A_2qcNQFHZLmNS5_vUKxjfTTh9P8w4-_uFSW6QQa2OGmBxnS0IQH6l5sr7O0iraONShG0YYo5bWAqVALiQpH6LDeWSx0uFWSjerC0Tefl3ZV9Ek2-lQ8xfz-f0x4VegAenwPsbk8O3ihZbgg9v5nhFfUdbWkXUzyI3VW-tw-XIdrYaMXzObDCnLvesp_-3hvW-dNt40hRMnlULgsa-MpGv6x-ibPkiFiS0VCbtkAPVyUrfWcLPtV6Gn0AINqQC0P4bft9LPPRTfLYfhlct0hac")
+				},
+				expected: auth.OAuth2Response{
+					Token:        "eyJhbGciOiJSUzI1NiIsImp3ayI6eyJlIjoiQVFBQiIsImtpZCI6IjdCVE06NllVRDpYSE00OjRNWUY6Qk1RWTo2N05YOkFTWVE6VVVBRjo2N1FaOlA3SjY6SktJMjpaT0FBIiwia3R5IjoiUlNBIiwibiI6Ind0bDROcC1YM3Z0cUotZU1oaXc5SWhkRzkyclR5Ukg1c05QVmZsZmZGUHlvZnMyLWtJT0R2bVlOWmFwckRMNHlBU2lvR2k2SkFHamlIcVV5d1JyMUtmTGhsX3RpWGt3YndNalBkZmxwUURuMXpjTC1uWjdkRU1VZVU4WTN0ekN3TVg2bHBVLVd2MDFmNERHNk85eFAzQXJnN0lCNVM0ZmdTXzhCTE5tREhZaUZmSFlzSHBhMFI2Wk10UV9VcG9yTXJDcDlnR0VaYkswbkVnTnZyWTFCel9ZRUtRUFZZNUxRTTdfZFoxMWcwS3hibGpBa3hmZnVoY0RUNE9rN1FTdnRGWHVTbFBINktNbDdtYjRJaERkaHRzbHU3YnExV3lkdmEwSmtwajQ5QlFuci13VkJHZU5ROFJHSUhXaGJqWE5uNzVMdF9rNGZCOUxnRGViQmRTNkpiSUlEUUNheHU3dmpnUE9EN2tDcUVxRVFYR0VjMHdzNlZ3MlAzLUF0NXhzNHJnVFhNYVU4NmdpVXExVXFGOE0zWFRDcEtXLTgyaHN6NjRIZk1IVUNpbVpiX2pnM205N3A2Wm9oU0tSaHlSWjRyLW05U0hzMnVBSXJkZmYzOGhLcEVGUWJCTWs1SkN5a05sTDViQWxNbjItZmpQZHdjMV9TWi1Db3hIQjlrVlhoZTRIRTdYU185bXJhTUdwZlVEOGY0OTBwZFZOVkd2NHVyenJSMDMxZ3RRbzg4SWRsb2ZkRTBGOFpBQWp6a3dUS1c3WGRpMzJXTUdRNlE1b3F6amxfc1V2OUV4Qy1pc2R6MklHX3RHU184M0gxN1N0RERsd0Jpa21iMEYxQUZNM2s2RzB1SzhzVFg5RElhS1pEVXFJU1BrM1ZaV1JCR0s1N3l1MEk5S3haeFRVIn0sInR5cCI6IkpXVCJ9.eyJpc3MiOiJpc3N1ZXIuZXhhbXBsZS5jb20iLCJzdWIiOiJ1c2VyIiwiYXVkIjpbInNlcnZpY2UuZXhhbXBsZS5jb20iXSwiZXhwIjoxMjU4Nzk0LCJuYmYiOjEyNTc4OTQsImlhdCI6MTI1Nzg5NCwianRpIjoiYWNjZXNzLXRva2VuIiwiYWNjZXNzIjpbXX0.iOWJdvCnT5r7XyA4nftdMqdJ9GVRA7-R81HCJpG0DZK94ktt5158DXm5nGhtIsmjfu398HyP3JBOjNcJ0kgIssGILXDxBXTa3J_k85IJYS9hCuRAlwhFTTjwO-3HRmVyKKIgkesrMZL4jCYzai1dtOUbHj6WQM8EC82UeoGxZP3YOQep8z2mveS7_N2xob2fQnXBdSCW8vGO6hvHlS_LPWd0K_slzAtKV_3wKGexOGMyKyB4SVi_7mTAfhyOKtof-rnHVBtFJmpLpghFY8jOTV-tpt3kLtdw_d7RfJSv79uqzuD_VqYxG1jQB65KNqSmXl32xt1-Mv3saxjDTnewn0HnJU00kdk-iTjErgqtC2PhgGG5lBHn0b2fbXZ9-NWQ8qQVOtM1jZMBknWKi0NpEtRon7lXKUpdBxvJW_8LKlFyvcmQzkg7D8VwYQ2mg1VNOj1jpP2a3bHcCgSvobTxcaxG8i4YLl8rwN-LrV5JVWIcAjcwUPlL6Sdfk8vCpRWAD3XY2CmccMRIlvqU0VnVkr2iE9o6Y5Cpbm-acivHMO8dj1rv7pkZmTuRGktgq2kTUyZ6f-pg_0S9eLMpzGX9Ek_iCssZaS8z179aw5r-_r1v8TWImjfNEitC9hOaJcE3XifEuzIKLnlJwSzmi3gy1M5lfQB5_SeJimycbGfMy5A",
+					RefreshToken: "",
+					ExpiresIn:    900,
+					IssuedAt:     "1970-01-15T14:24:54+01:00",
+				},
+			},
+			{
+				name: "online access",
+				formModifier: func(form url.Values) {
+					form.Add("grant_type", "password")
+					form.Add("username", "user")
+					form.Add("password", "password")
+
+					form.Add("access_type", "online")
+				},
+				expected: auth.OAuth2Response{
+					Token:        "eyJhbGciOiJSUzI1NiIsImp3ayI6eyJlIjoiQVFBQiIsImtpZCI6IjdCVE06NllVRDpYSE00OjRNWUY6Qk1RWTo2N05YOkFTWVE6VVVBRjo2N1FaOlA3SjY6SktJMjpaT0FBIiwia3R5IjoiUlNBIiwibiI6Ind0bDROcC1YM3Z0cUotZU1oaXc5SWhkRzkyclR5Ukg1c05QVmZsZmZGUHlvZnMyLWtJT0R2bVlOWmFwckRMNHlBU2lvR2k2SkFHamlIcVV5d1JyMUtmTGhsX3RpWGt3YndNalBkZmxwUURuMXpjTC1uWjdkRU1VZVU4WTN0ekN3TVg2bHBVLVd2MDFmNERHNk85eFAzQXJnN0lCNVM0ZmdTXzhCTE5tREhZaUZmSFlzSHBhMFI2Wk10UV9VcG9yTXJDcDlnR0VaYkswbkVnTnZyWTFCel9ZRUtRUFZZNUxRTTdfZFoxMWcwS3hibGpBa3hmZnVoY0RUNE9rN1FTdnRGWHVTbFBINktNbDdtYjRJaERkaHRzbHU3YnExV3lkdmEwSmtwajQ5QlFuci13VkJHZU5ROFJHSUhXaGJqWE5uNzVMdF9rNGZCOUxnRGViQmRTNkpiSUlEUUNheHU3dmpnUE9EN2tDcUVxRVFYR0VjMHdzNlZ3MlAzLUF0NXhzNHJnVFhNYVU4NmdpVXExVXFGOE0zWFRDcEtXLTgyaHN6NjRIZk1IVUNpbVpiX2pnM205N3A2Wm9oU0tSaHlSWjRyLW05U0hzMnVBSXJkZmYzOGhLcEVGUWJCTWs1SkN5a05sTDViQWxNbjItZmpQZHdjMV9TWi1Db3hIQjlrVlhoZTRIRTdYU185bXJhTUdwZlVEOGY0OTBwZFZOVkd2NHVyenJSMDMxZ3RRbzg4SWRsb2ZkRTBGOFpBQWp6a3dUS1c3WGRpMzJXTUdRNlE1b3F6amxfc1V2OUV4Qy1pc2R6MklHX3RHU184M0gxN1N0RERsd0Jpa21iMEYxQUZNM2s2RzB1SzhzVFg5RElhS1pEVXFJU1BrM1ZaV1JCR0s1N3l1MEk5S3haeFRVIn0sInR5cCI6IkpXVCJ9.eyJpc3MiOiJpc3N1ZXIuZXhhbXBsZS5jb20iLCJzdWIiOiJ1c2VyIiwiYXVkIjpbInNlcnZpY2UuZXhhbXBsZS5jb20iXSwiZXhwIjoxMjU4Nzk0LCJuYmYiOjEyNTc4OTQsImlhdCI6MTI1Nzg5NCwianRpIjoiYWNjZXNzLXRva2VuIiwiYWNjZXNzIjpbXX0.iOWJdvCnT5r7XyA4nftdMqdJ9GVRA7-R81HCJpG0DZK94ktt5158DXm5nGhtIsmjfu398HyP3JBOjNcJ0kgIssGILXDxBXTa3J_k85IJYS9hCuRAlwhFTTjwO-3HRmVyKKIgkesrMZL4jCYzai1dtOUbHj6WQM8EC82UeoGxZP3YOQep8z2mveS7_N2xob2fQnXBdSCW8vGO6hvHlS_LPWd0K_slzAtKV_3wKGexOGMyKyB4SVi_7mTAfhyOKtof-rnHVBtFJmpLpghFY8jOTV-tpt3kLtdw_d7RfJSv79uqzuD_VqYxG1jQB65KNqSmXl32xt1-Mv3saxjDTnewn0HnJU00kdk-iTjErgqtC2PhgGG5lBHn0b2fbXZ9-NWQ8qQVOtM1jZMBknWKi0NpEtRon7lXKUpdBxvJW_8LKlFyvcmQzkg7D8VwYQ2mg1VNOj1jpP2a3bHcCgSvobTxcaxG8i4YLl8rwN-LrV5JVWIcAjcwUPlL6Sdfk8vCpRWAD3XY2CmccMRIlvqU0VnVkr2iE9o6Y5Cpbm-acivHMO8dj1rv7pkZmTuRGktgq2kTUyZ6f-pg_0S9eLMpzGX9Ek_iCssZaS8z179aw5r-_r1v8TWImjfNEitC9hOaJcE3XifEuzIKLnlJwSzmi3gy1M5lfQB5_SeJimycbGfMy5A",
+					RefreshToken: "",
+					ExpiresIn:    900,
+					IssuedAt:     "1970-01-15T14:24:54+01:00",
+				},
+			},
+			{
+				name: "offline access",
+				formModifier: func(form url.Values) {
+					form.Add("grant_type", "password")
+					form.Add("username", "user")
+					form.Add("password", "password")
+
+					form.Add("access_type", "offline")
+				},
+				expected: auth.OAuth2Response{
+					Token:        "eyJhbGciOiJSUzI1NiIsImp3ayI6eyJlIjoiQVFBQiIsImtpZCI6IjdCVE06NllVRDpYSE00OjRNWUY6Qk1RWTo2N05YOkFTWVE6VVVBRjo2N1FaOlA3SjY6SktJMjpaT0FBIiwia3R5IjoiUlNBIiwibiI6Ind0bDROcC1YM3Z0cUotZU1oaXc5SWhkRzkyclR5Ukg1c05QVmZsZmZGUHlvZnMyLWtJT0R2bVlOWmFwckRMNHlBU2lvR2k2SkFHamlIcVV5d1JyMUtmTGhsX3RpWGt3YndNalBkZmxwUURuMXpjTC1uWjdkRU1VZVU4WTN0ekN3TVg2bHBVLVd2MDFmNERHNk85eFAzQXJnN0lCNVM0ZmdTXzhCTE5tREhZaUZmSFlzSHBhMFI2Wk10UV9VcG9yTXJDcDlnR0VaYkswbkVnTnZyWTFCel9ZRUtRUFZZNUxRTTdfZFoxMWcwS3hibGpBa3hmZnVoY0RUNE9rN1FTdnRGWHVTbFBINktNbDdtYjRJaERkaHRzbHU3YnExV3lkdmEwSmtwajQ5QlFuci13VkJHZU5ROFJHSUhXaGJqWE5uNzVMdF9rNGZCOUxnRGViQmRTNkpiSUlEUUNheHU3dmpnUE9EN2tDcUVxRVFYR0VjMHdzNlZ3MlAzLUF0NXhzNHJnVFhNYVU4NmdpVXExVXFGOE0zWFRDcEtXLTgyaHN6NjRIZk1IVUNpbVpiX2pnM205N3A2Wm9oU0tSaHlSWjRyLW05U0hzMnVBSXJkZmYzOGhLcEVGUWJCTWs1SkN5a05sTDViQWxNbjItZmpQZHdjMV9TWi1Db3hIQjlrVlhoZTRIRTdYU185bXJhTUdwZlVEOGY0OTBwZFZOVkd2NHVyenJSMDMxZ3RRbzg4SWRsb2ZkRTBGOFpBQWp6a3dUS1c3WGRpMzJXTUdRNlE1b3F6amxfc1V2OUV4Qy1pc2R6MklHX3RHU184M0gxN1N0RERsd0Jpa21iMEYxQUZNM2s2RzB1SzhzVFg5RElhS1pEVXFJU1BrM1ZaV1JCR0s1N3l1MEk5S3haeFRVIn0sInR5cCI6IkpXVCJ9.eyJpc3MiOiJpc3N1ZXIuZXhhbXBsZS5jb20iLCJzdWIiOiJ1c2VyIiwiYXVkIjpbInNlcnZpY2UuZXhhbXBsZS5jb20iXSwiZXhwIjoxMjU4Nzk0LCJuYmYiOjEyNTc4OTQsImlhdCI6MTI1Nzg5NCwianRpIjoiYWNjZXNzLXRva2VuIiwiYWNjZXNzIjpbXX0.iOWJdvCnT5r7XyA4nftdMqdJ9GVRA7-R81HCJpG0DZK94ktt5158DXm5nGhtIsmjfu398HyP3JBOjNcJ0kgIssGILXDxBXTa3J_k85IJYS9hCuRAlwhFTTjwO-3HRmVyKKIgkesrMZL4jCYzai1dtOUbHj6WQM8EC82UeoGxZP3YOQep8z2mveS7_N2xob2fQnXBdSCW8vGO6hvHlS_LPWd0K_slzAtKV_3wKGexOGMyKyB4SVi_7mTAfhyOKtof-rnHVBtFJmpLpghFY8jOTV-tpt3kLtdw_d7RfJSv79uqzuD_VqYxG1jQB65KNqSmXl32xt1-Mv3saxjDTnewn0HnJU00kdk-iTjErgqtC2PhgGG5lBHn0b2fbXZ9-NWQ8qQVOtM1jZMBknWKi0NpEtRon7lXKUpdBxvJW_8LKlFyvcmQzkg7D8VwYQ2mg1VNOj1jpP2a3bHcCgSvobTxcaxG8i4YLl8rwN-LrV5JVWIcAjcwUPlL6Sdfk8vCpRWAD3XY2CmccMRIlvqU0VnVkr2iE9o6Y5Cpbm-acivHMO8dj1rv7pkZmTuRGktgq2kTUyZ6f-pg_0S9eLMpzGX9Ek_iCssZaS8z179aw5r-_r1v8TWImjfNEitC9hOaJcE3XifEuzIKLnlJwSzmi3gy1M5lfQB5_SeJimycbGfMy5A",
+					RefreshToken: "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJpc3N1ZXIuZXhhbXBsZS5jb20iLCJzdWIiOiJ1c2VyIiwiYXVkIjpbInNlcnZpY2UuZXhhbXBsZS5jb20iXSwibmJmIjoxMjU3ODk0LCJpYXQiOjEyNTc4OTR9.moFJDxmmQX4f00EBaHapXQS9PzjVBddQ71Wy9Zem8NEryWj7LGt28eJQYBxCxHHBD4jzZDl4d8H8Rv2Slt4xWAYOFwweQShiDh3Bz8dBxOlya0ZEj-V3N6lldSaJVOBhY6CygHE8ucqZVymCTBsuax92nZqX0-15IltVorcglWb3jkofuvMITHaE4hV1r0y4bqStq6lFgrfbBb6DQUeHqnqITvD87hrX6qBNFpI96mqbrxJtIQTSzDhX7SgFqiiKbCqMHAnIQnfM0Zs_Pc0XM3SrAuCfoSIVuc9otliHR17MjZI5qvvAkrtphjdjnJwUc_6Dk3h1-0-HpsvE-7CPNiThejSlHPC8f3-FMQ87tb8691VdQPQCW8PESbcfR7gidvpcFbb1zH0-gz0umIE58A_2qcNQFHZLmNS5_vUKxjfTTh9P8w4-_uFSW6QQa2OGmBxnS0IQH6l5sr7O0iraONShG0YYo5bWAqVALiQpH6LDeWSx0uFWSjerC0Tefl3ZV9Ek2-lQ8xfz-f0x4VegAenwPsbk8O3ihZbgg9v5nhFfUdbWkXUzyI3VW-tw-XIdrYaMXzObDCnLvesp_-3hvW-dNt40hRMnlULgsa-MpGv6x-ibPkiFiS0VCbtkAPVyUrfWcLPtV6Gn0AINqQC0P4bft9LPPRTfLYfhlct0hac",
+					ExpiresIn:    900,
+					IssuedAt:     "1970-01-15T14:24:54+01:00",
+				},
+			},
+		}
+
+		grantTestCases := []struct {
+			name         string
+			formModifier func(form url.Values)
+			expected     auth.OAuth2Response
+		}{
+			{
+				name: "empty scope",
+				formModifier: func(form url.Values) {
+					form.Add("scope", "")
+				},
+				expected: auth.OAuth2Response{
+					Token:        "eyJhbGciOiJSUzI1NiIsImp3ayI6eyJlIjoiQVFBQiIsImtpZCI6IjdCVE06NllVRDpYSE00OjRNWUY6Qk1RWTo2N05YOkFTWVE6VVVBRjo2N1FaOlA3SjY6SktJMjpaT0FBIiwia3R5IjoiUlNBIiwibiI6Ind0bDROcC1YM3Z0cUotZU1oaXc5SWhkRzkyclR5Ukg1c05QVmZsZmZGUHlvZnMyLWtJT0R2bVlOWmFwckRMNHlBU2lvR2k2SkFHamlIcVV5d1JyMUtmTGhsX3RpWGt3YndNalBkZmxwUURuMXpjTC1uWjdkRU1VZVU4WTN0ekN3TVg2bHBVLVd2MDFmNERHNk85eFAzQXJnN0lCNVM0ZmdTXzhCTE5tREhZaUZmSFlzSHBhMFI2Wk10UV9VcG9yTXJDcDlnR0VaYkswbkVnTnZyWTFCel9ZRUtRUFZZNUxRTTdfZFoxMWcwS3hibGpBa3hmZnVoY0RUNE9rN1FTdnRGWHVTbFBINktNbDdtYjRJaERkaHRzbHU3YnExV3lkdmEwSmtwajQ5QlFuci13VkJHZU5ROFJHSUhXaGJqWE5uNzVMdF9rNGZCOUxnRGViQmRTNkpiSUlEUUNheHU3dmpnUE9EN2tDcUVxRVFYR0VjMHdzNlZ3MlAzLUF0NXhzNHJnVFhNYVU4NmdpVXExVXFGOE0zWFRDcEtXLTgyaHN6NjRIZk1IVUNpbVpiX2pnM205N3A2Wm9oU0tSaHlSWjRyLW05U0hzMnVBSXJkZmYzOGhLcEVGUWJCTWs1SkN5a05sTDViQWxNbjItZmpQZHdjMV9TWi1Db3hIQjlrVlhoZTRIRTdYU185bXJhTUdwZlVEOGY0OTBwZFZOVkd2NHVyenJSMDMxZ3RRbzg4SWRsb2ZkRTBGOFpBQWp6a3dUS1c3WGRpMzJXTUdRNlE1b3F6amxfc1V2OUV4Qy1pc2R6MklHX3RHU184M0gxN1N0RERsd0Jpa21iMEYxQUZNM2s2RzB1SzhzVFg5RElhS1pEVXFJU1BrM1ZaV1JCR0s1N3l1MEk5S3haeFRVIn0sInR5cCI6IkpXVCJ9.eyJpc3MiOiJpc3N1ZXIuZXhhbXBsZS5jb20iLCJzdWIiOiJ1c2VyIiwiYXVkIjpbInNlcnZpY2UuZXhhbXBsZS5jb20iXSwiZXhwIjoxMjU4Nzk0LCJuYmYiOjEyNTc4OTQsImlhdCI6MTI1Nzg5NCwianRpIjoiYWNjZXNzLXRva2VuIiwiYWNjZXNzIjpbXX0.iOWJdvCnT5r7XyA4nftdMqdJ9GVRA7-R81HCJpG0DZK94ktt5158DXm5nGhtIsmjfu398HyP3JBOjNcJ0kgIssGILXDxBXTa3J_k85IJYS9hCuRAlwhFTTjwO-3HRmVyKKIgkesrMZL4jCYzai1dtOUbHj6WQM8EC82UeoGxZP3YOQep8z2mveS7_N2xob2fQnXBdSCW8vGO6hvHlS_LPWd0K_slzAtKV_3wKGexOGMyKyB4SVi_7mTAfhyOKtof-rnHVBtFJmpLpghFY8jOTV-tpt3kLtdw_d7RfJSv79uqzuD_VqYxG1jQB65KNqSmXl32xt1-Mv3saxjDTnewn0HnJU00kdk-iTjErgqtC2PhgGG5lBHn0b2fbXZ9-NWQ8qQVOtM1jZMBknWKi0NpEtRon7lXKUpdBxvJW_8LKlFyvcmQzkg7D8VwYQ2mg1VNOj1jpP2a3bHcCgSvobTxcaxG8i4YLl8rwN-LrV5JVWIcAjcwUPlL6Sdfk8vCpRWAD3XY2CmccMRIlvqU0VnVkr2iE9o6Y5Cpbm-acivHMO8dj1rv7pkZmTuRGktgq2kTUyZ6f-pg_0S9eLMpzGX9Ek_iCssZaS8z179aw5r-_r1v8TWImjfNEitC9hOaJcE3XifEuzIKLnlJwSzmi3gy1M5lfQB5_SeJimycbGfMy5A",
+					RefreshToken: "",
+					ExpiresIn:    900,
+					IssuedAt:     "1970-01-15T14:24:54+01:00",
+				},
+			},
+			{
+				name: "non-empty scope with no access",
+				formModifier: func(form url.Values) {
+					form.Add("scope", "repository:name:push,pull")
+				},
+				expected: auth.OAuth2Response{
+					Token:        "eyJhbGciOiJSUzI1NiIsImp3ayI6eyJlIjoiQVFBQiIsImtpZCI6IjdCVE06NllVRDpYSE00OjRNWUY6Qk1RWTo2N05YOkFTWVE6VVVBRjo2N1FaOlA3SjY6SktJMjpaT0FBIiwia3R5IjoiUlNBIiwibiI6Ind0bDROcC1YM3Z0cUotZU1oaXc5SWhkRzkyclR5Ukg1c05QVmZsZmZGUHlvZnMyLWtJT0R2bVlOWmFwckRMNHlBU2lvR2k2SkFHamlIcVV5d1JyMUtmTGhsX3RpWGt3YndNalBkZmxwUURuMXpjTC1uWjdkRU1VZVU4WTN0ekN3TVg2bHBVLVd2MDFmNERHNk85eFAzQXJnN0lCNVM0ZmdTXzhCTE5tREhZaUZmSFlzSHBhMFI2Wk10UV9VcG9yTXJDcDlnR0VaYkswbkVnTnZyWTFCel9ZRUtRUFZZNUxRTTdfZFoxMWcwS3hibGpBa3hmZnVoY0RUNE9rN1FTdnRGWHVTbFBINktNbDdtYjRJaERkaHRzbHU3YnExV3lkdmEwSmtwajQ5QlFuci13VkJHZU5ROFJHSUhXaGJqWE5uNzVMdF9rNGZCOUxnRGViQmRTNkpiSUlEUUNheHU3dmpnUE9EN2tDcUVxRVFYR0VjMHdzNlZ3MlAzLUF0NXhzNHJnVFhNYVU4NmdpVXExVXFGOE0zWFRDcEtXLTgyaHN6NjRIZk1IVUNpbVpiX2pnM205N3A2Wm9oU0tSaHlSWjRyLW05U0hzMnVBSXJkZmYzOGhLcEVGUWJCTWs1SkN5a05sTDViQWxNbjItZmpQZHdjMV9TWi1Db3hIQjlrVlhoZTRIRTdYU185bXJhTUdwZlVEOGY0OTBwZFZOVkd2NHVyenJSMDMxZ3RRbzg4SWRsb2ZkRTBGOFpBQWp6a3dUS1c3WGRpMzJXTUdRNlE1b3F6amxfc1V2OUV4Qy1pc2R6MklHX3RHU184M0gxN1N0RERsd0Jpa21iMEYxQUZNM2s2RzB1SzhzVFg5RElhS1pEVXFJU1BrM1ZaV1JCR0s1N3l1MEk5S3haeFRVIn0sInR5cCI6IkpXVCJ9.eyJpc3MiOiJpc3N1ZXIuZXhhbXBsZS5jb20iLCJzdWIiOiJ1c2VyIiwiYXVkIjpbInNlcnZpY2UuZXhhbXBsZS5jb20iXSwiZXhwIjoxMjU4Nzk0LCJuYmYiOjEyNTc4OTQsImlhdCI6MTI1Nzg5NCwianRpIjoiYWNjZXNzLXRva2VuIiwiYWNjZXNzIjpbXX0.iOWJdvCnT5r7XyA4nftdMqdJ9GVRA7-R81HCJpG0DZK94ktt5158DXm5nGhtIsmjfu398HyP3JBOjNcJ0kgIssGILXDxBXTa3J_k85IJYS9hCuRAlwhFTTjwO-3HRmVyKKIgkesrMZL4jCYzai1dtOUbHj6WQM8EC82UeoGxZP3YOQep8z2mveS7_N2xob2fQnXBdSCW8vGO6hvHlS_LPWd0K_slzAtKV_3wKGexOGMyKyB4SVi_7mTAfhyOKtof-rnHVBtFJmpLpghFY8jOTV-tpt3kLtdw_d7RfJSv79uqzuD_VqYxG1jQB65KNqSmXl32xt1-Mv3saxjDTnewn0HnJU00kdk-iTjErgqtC2PhgGG5lBHn0b2fbXZ9-NWQ8qQVOtM1jZMBknWKi0NpEtRon7lXKUpdBxvJW_8LKlFyvcmQzkg7D8VwYQ2mg1VNOj1jpP2a3bHcCgSvobTxcaxG8i4YLl8rwN-LrV5JVWIcAjcwUPlL6Sdfk8vCpRWAD3XY2CmccMRIlvqU0VnVkr2iE9o6Y5Cpbm-acivHMO8dj1rv7pkZmTuRGktgq2kTUyZ6f-pg_0S9eLMpzGX9Ek_iCssZaS8z179aw5r-_r1v8TWImjfNEitC9hOaJcE3XifEuzIKLnlJwSzmi3gy1M5lfQB5_SeJimycbGfMy5A",
+					RefreshToken: "",
+					ExpiresIn:    900,
+					IssuedAt:     "1970-01-15T14:24:54+01:00",
+				},
+			},
+			{
+				name: "non-empty scope with access",
+				formModifier: func(form url.Values) {
+					form.Add("scope", "repository:user/name:push,pull")
+					form.Add("scope", "repository:user/name2:push,pull")
+				},
+				expected: auth.OAuth2Response{
+					Token:        "eyJhbGciOiJSUzI1NiIsImp3ayI6eyJlIjoiQVFBQiIsImtpZCI6IjdCVE06NllVRDpYSE00OjRNWUY6Qk1RWTo2N05YOkFTWVE6VVVBRjo2N1FaOlA3SjY6SktJMjpaT0FBIiwia3R5IjoiUlNBIiwibiI6Ind0bDROcC1YM3Z0cUotZU1oaXc5SWhkRzkyclR5Ukg1c05QVmZsZmZGUHlvZnMyLWtJT0R2bVlOWmFwckRMNHlBU2lvR2k2SkFHamlIcVV5d1JyMUtmTGhsX3RpWGt3YndNalBkZmxwUURuMXpjTC1uWjdkRU1VZVU4WTN0ekN3TVg2bHBVLVd2MDFmNERHNk85eFAzQXJnN0lCNVM0ZmdTXzhCTE5tREhZaUZmSFlzSHBhMFI2Wk10UV9VcG9yTXJDcDlnR0VaYkswbkVnTnZyWTFCel9ZRUtRUFZZNUxRTTdfZFoxMWcwS3hibGpBa3hmZnVoY0RUNE9rN1FTdnRGWHVTbFBINktNbDdtYjRJaERkaHRzbHU3YnExV3lkdmEwSmtwajQ5QlFuci13VkJHZU5ROFJHSUhXaGJqWE5uNzVMdF9rNGZCOUxnRGViQmRTNkpiSUlEUUNheHU3dmpnUE9EN2tDcUVxRVFYR0VjMHdzNlZ3MlAzLUF0NXhzNHJnVFhNYVU4NmdpVXExVXFGOE0zWFRDcEtXLTgyaHN6NjRIZk1IVUNpbVpiX2pnM205N3A2Wm9oU0tSaHlSWjRyLW05U0hzMnVBSXJkZmYzOGhLcEVGUWJCTWs1SkN5a05sTDViQWxNbjItZmpQZHdjMV9TWi1Db3hIQjlrVlhoZTRIRTdYU185bXJhTUdwZlVEOGY0OTBwZFZOVkd2NHVyenJSMDMxZ3RRbzg4SWRsb2ZkRTBGOFpBQWp6a3dUS1c3WGRpMzJXTUdRNlE1b3F6amxfc1V2OUV4Qy1pc2R6MklHX3RHU184M0gxN1N0RERsd0Jpa21iMEYxQUZNM2s2RzB1SzhzVFg5RElhS1pEVXFJU1BrM1ZaV1JCR0s1N3l1MEk5S3haeFRVIn0sInR5cCI6IkpXVCJ9.eyJpc3MiOiJpc3N1ZXIuZXhhbXBsZS5jb20iLCJzdWIiOiJ1c2VyIiwiYXVkIjpbInNlcnZpY2UuZXhhbXBsZS5jb20iXSwiZXhwIjoxMjU4Nzk0LCJuYmYiOjEyNTc4OTQsImlhdCI6MTI1Nzg5NCwianRpIjoiYWNjZXNzLXRva2VuIiwiYWNjZXNzIjpbeyJ0eXBlIjoicmVwb3NpdG9yeSIsImNsYXNzIjoiIiwibmFtZSI6InVzZXIvbmFtZSIsImFjdGlvbnMiOlsicHVzaCIsInB1bGwiXX0seyJ0eXBlIjoicmVwb3NpdG9yeSIsImNsYXNzIjoiIiwibmFtZSI6InVzZXIvbmFtZTIiLCJhY3Rpb25zIjpbInB1c2giLCJwdWxsIl19XX0.NXq33tz-v1zvwLkmUzVEJm1Q3MDJwM2ypuIuH83-o_NWBxz65Vaxg7_J4Vk1E4FK_x-rlALlx4fWvMjqhnV67MHoVDoTKJfLEUDkchRixiZTBoyrVbzvuINLQhfWGsdlZ9vv-eQMFspghkUH-GazhN7BInJ3JU4RaQtXxc4OgHI_t2PRI48rDWWGCgjl4Id7Fj_orM65ksjw6Cu_1EYG3Y2Q45ONmDO3DOYs6NM5x6KFLW2gCcZvshlV2JoAHKTom4Bcyfcevckc4krdtAhEngtyRHmTFovlwY3zHo0qvc_JKBbDCd-ybPLlSXJGnYzCjuM4JwCLOeAWloOCUGZc16FjzhZn431c-m1_MqbvGkLRGVXVZZIJvw4c61iaMaBVBIocJXwT5I2kzH1-6KU5e-6J7NC6dWP5KMOiOYQp4vrExm7a0cLChCzj2RqPFL_-szmnNoY8luoLHwEF7N9nA1hO8U03SP_IqPecmq2cUu43EG-F8rNc2fBOqtQQIzFSEBgNZSdP8RcFFH_jlpGaM8XRgYA0cVt2ScjcRtBRxGFfr1ZxmD8vboYVJK2-YEpddp4Fk6VdrKGXpaqQj1TuDeUT_OcTMTh8OQZ--L9E9V7OsyzEjXWqBaBBvTWWtdVm8Cql9DWrauN6vkfLRlB3Zc_ZvaBACpdecwpNOvh-Yhk",
+					RefreshToken: "",
+					Scope:        "repository:user/name:push,pull repository:user/name2:push,pull",
+					ExpiresIn:    900,
+					IssuedAt:     "1970-01-15T14:24:54+01:00",
+				},
+			},
+			{
+				name: "non-empty scope with mixed access",
+				formModifier: func(form url.Values) {
+					form.Add("scope", "repository:name:push,pull")
+					form.Add("scope", "repository:user/name:push,pull")
+					form.Add("scope", "repository:user/name2:push,pull")
+				},
+				expected: auth.OAuth2Response{
+					Token:        "eyJhbGciOiJSUzI1NiIsImp3ayI6eyJlIjoiQVFBQiIsImtpZCI6IjdCVE06NllVRDpYSE00OjRNWUY6Qk1RWTo2N05YOkFTWVE6VVVBRjo2N1FaOlA3SjY6SktJMjpaT0FBIiwia3R5IjoiUlNBIiwibiI6Ind0bDROcC1YM3Z0cUotZU1oaXc5SWhkRzkyclR5Ukg1c05QVmZsZmZGUHlvZnMyLWtJT0R2bVlOWmFwckRMNHlBU2lvR2k2SkFHamlIcVV5d1JyMUtmTGhsX3RpWGt3YndNalBkZmxwUURuMXpjTC1uWjdkRU1VZVU4WTN0ekN3TVg2bHBVLVd2MDFmNERHNk85eFAzQXJnN0lCNVM0ZmdTXzhCTE5tREhZaUZmSFlzSHBhMFI2Wk10UV9VcG9yTXJDcDlnR0VaYkswbkVnTnZyWTFCel9ZRUtRUFZZNUxRTTdfZFoxMWcwS3hibGpBa3hmZnVoY0RUNE9rN1FTdnRGWHVTbFBINktNbDdtYjRJaERkaHRzbHU3YnExV3lkdmEwSmtwajQ5QlFuci13VkJHZU5ROFJHSUhXaGJqWE5uNzVMdF9rNGZCOUxnRGViQmRTNkpiSUlEUUNheHU3dmpnUE9EN2tDcUVxRVFYR0VjMHdzNlZ3MlAzLUF0NXhzNHJnVFhNYVU4NmdpVXExVXFGOE0zWFRDcEtXLTgyaHN6NjRIZk1IVUNpbVpiX2pnM205N3A2Wm9oU0tSaHlSWjRyLW05U0hzMnVBSXJkZmYzOGhLcEVGUWJCTWs1SkN5a05sTDViQWxNbjItZmpQZHdjMV9TWi1Db3hIQjlrVlhoZTRIRTdYU185bXJhTUdwZlVEOGY0OTBwZFZOVkd2NHVyenJSMDMxZ3RRbzg4SWRsb2ZkRTBGOFpBQWp6a3dUS1c3WGRpMzJXTUdRNlE1b3F6amxfc1V2OUV4Qy1pc2R6MklHX3RHU184M0gxN1N0RERsd0Jpa21iMEYxQUZNM2s2RzB1SzhzVFg5RElhS1pEVXFJU1BrM1ZaV1JCR0s1N3l1MEk5S3haeFRVIn0sInR5cCI6IkpXVCJ9.eyJpc3MiOiJpc3N1ZXIuZXhhbXBsZS5jb20iLCJzdWIiOiJ1c2VyIiwiYXVkIjpbInNlcnZpY2UuZXhhbXBsZS5jb20iXSwiZXhwIjoxMjU4Nzk0LCJuYmYiOjEyNTc4OTQsImlhdCI6MTI1Nzg5NCwianRpIjoiYWNjZXNzLXRva2VuIiwiYWNjZXNzIjpbeyJ0eXBlIjoicmVwb3NpdG9yeSIsImNsYXNzIjoiIiwibmFtZSI6InVzZXIvbmFtZSIsImFjdGlvbnMiOlsicHVzaCIsInB1bGwiXX0seyJ0eXBlIjoicmVwb3NpdG9yeSIsImNsYXNzIjoiIiwibmFtZSI6InVzZXIvbmFtZTIiLCJhY3Rpb25zIjpbInB1c2giLCJwdWxsIl19XX0.NXq33tz-v1zvwLkmUzVEJm1Q3MDJwM2ypuIuH83-o_NWBxz65Vaxg7_J4Vk1E4FK_x-rlALlx4fWvMjqhnV67MHoVDoTKJfLEUDkchRixiZTBoyrVbzvuINLQhfWGsdlZ9vv-eQMFspghkUH-GazhN7BInJ3JU4RaQtXxc4OgHI_t2PRI48rDWWGCgjl4Id7Fj_orM65ksjw6Cu_1EYG3Y2Q45ONmDO3DOYs6NM5x6KFLW2gCcZvshlV2JoAHKTom4Bcyfcevckc4krdtAhEngtyRHmTFovlwY3zHo0qvc_JKBbDCd-ybPLlSXJGnYzCjuM4JwCLOeAWloOCUGZc16FjzhZn431c-m1_MqbvGkLRGVXVZZIJvw4c61iaMaBVBIocJXwT5I2kzH1-6KU5e-6J7NC6dWP5KMOiOYQp4vrExm7a0cLChCzj2RqPFL_-szmnNoY8luoLHwEF7N9nA1hO8U03SP_IqPecmq2cUu43EG-F8rNc2fBOqtQQIzFSEBgNZSdP8RcFFH_jlpGaM8XRgYA0cVt2ScjcRtBRxGFfr1ZxmD8vboYVJK2-YEpddp4Fk6VdrKGXpaqQj1TuDeUT_OcTMTh8OQZ--L9E9V7OsyzEjXWqBaBBvTWWtdVm8Cql9DWrauN6vkfLRlB3Zc_ZvaBACpdecwpNOvh-Yhk",
+					RefreshToken: "",
+					Scope:        "repository:user/name:push,pull repository:user/name2:push,pull",
+					ExpiresIn:    900,
+					IssuedAt:     "1970-01-15T14:24:54+01:00",
+				},
+			},
+		}
+
+		for _, testCase := range grantTestCases {
+			testCase := testCase
+
+			passwordGrant := testCase
+			passwordGrant.name = testCase.name + " with password grant"
+			passwordGrant.formModifier = func(form url.Values) {
+				form.Add("grant_type", "password")
+				form.Add("username", "user")
+				form.Add("password", "password")
+
+				testCase.formModifier(form)
+			}
+
+			refreshTokenGrant := testCase
+			refreshTokenGrant.name = testCase.name + " with refresh token grant"
+			refreshTokenGrant.formModifier = func(form url.Values) {
+				form.Add("grant_type", "refresh_token")
+				form.Add("refresh_token", "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJpc3N1ZXIuZXhhbXBsZS5jb20iLCJzdWIiOiJ1c2VyIiwiYXVkIjpbInNlcnZpY2UuZXhhbXBsZS5jb20iXSwibmJmIjoxMjU3ODk0LCJpYXQiOjEyNTc4OTR9.moFJDxmmQX4f00EBaHapXQS9PzjVBddQ71Wy9Zem8NEryWj7LGt28eJQYBxCxHHBD4jzZDl4d8H8Rv2Slt4xWAYOFwweQShiDh3Bz8dBxOlya0ZEj-V3N6lldSaJVOBhY6CygHE8ucqZVymCTBsuax92nZqX0-15IltVorcglWb3jkofuvMITHaE4hV1r0y4bqStq6lFgrfbBb6DQUeHqnqITvD87hrX6qBNFpI96mqbrxJtIQTSzDhX7SgFqiiKbCqMHAnIQnfM0Zs_Pc0XM3SrAuCfoSIVuc9otliHR17MjZI5qvvAkrtphjdjnJwUc_6Dk3h1-0-HpsvE-7CPNiThejSlHPC8f3-FMQ87tb8691VdQPQCW8PESbcfR7gidvpcFbb1zH0-gz0umIE58A_2qcNQFHZLmNS5_vUKxjfTTh9P8w4-_uFSW6QQa2OGmBxnS0IQH6l5sr7O0iraONShG0YYo5bWAqVALiQpH6LDeWSx0uFWSjerC0Tefl3ZV9Ek2-lQ8xfz-f0x4VegAenwPsbk8O3ihZbgg9v5nhFfUdbWkXUzyI3VW-tw-XIdrYaMXzObDCnLvesp_-3hvW-dNt40hRMnlULgsa-MpGv6x-ibPkiFiS0VCbtkAPVyUrfWcLPtV6Gn0AINqQC0P4bft9LPPRTfLYfhlct0hac")
+
+				testCase.formModifier(form)
+			}
+
+			testCases = append(testCases, passwordGrant, refreshTokenGrant)
+		}
+
+		for _, testCase := range testCases {
+			testCase := testCase
+
+			t.Run(testCase.name, func(t *testing.T) {
+				request := request.Clone(context.Background())
+				form := maps.Clone(form)
+
+				if testCase.formModifier != nil {
+					testCase.formModifier(form)
+				}
+
+				request.Body = io.NopCloser(strings.NewReader(form.Encode()))
+
+				response, err := httpServer.Client().Do(request)
+				require.NoError(t, err)
+
+				defer response.Body.Close()
+
+				require.Equal(t, http.StatusOK, response.StatusCode)
+
+				var actual auth.OAuth2Response
+
+				err = json.NewDecoder(response.Body).Decode(&actual)
+				require.NoError(t, err)
+
+				assert.Equal(t, testCase.expected, actual)
+			})
+		}
+	})
+}
