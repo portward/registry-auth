@@ -14,7 +14,7 @@ type UserAuthenticator struct {
 	entries map[string]User
 }
 
-// NewUserAuthenticator returns a new UserAuthenticator.
+// NewUserAuthenticator returns a new [UserAuthenticator].
 func NewUserAuthenticator(users []User) UserAuthenticator {
 	entries := make(map[string]User, len(users))
 
@@ -27,7 +27,7 @@ func NewUserAuthenticator(users []User) UserAuthenticator {
 	}
 }
 
-// User is an auth.Subject.
+// User is an [auth.Subject].
 type User struct {
 	Enabled      bool
 	Username     string
@@ -35,12 +35,12 @@ type User struct {
 	Attrs        map[string]any
 }
 
-// ID implements auth.Subject.
+// ID implements [auth.Subject].
 func (u User) ID() auth.SubjectID {
 	return auth.SubjectIDFromString(u.Username)
 }
 
-// Attribute implements auth.Subject.
+// Attribute implements [auth.Subject].
 func (u User) Attribute(key string) (any, bool) {
 	if u.Attrs == nil {
 		return "", false
@@ -51,12 +51,12 @@ func (u User) Attribute(key string) (any, bool) {
 	return v, ok
 }
 
-// Attributes implements auth.Subject.
+// Attributes implements [auth.Subject].
 func (u User) Attributes() map[string]any {
 	return maps.Clone(u.Attrs)
 }
 
-// AuthenticatePassword implements auth.PasswordAuthenticator.
+// AuthenticatePassword implements [auth.PasswordAuthenticator].
 func (a UserAuthenticator) AuthenticatePassword(_ context.Context, username string, password string) (auth.Subject, error) {
 	if a.entries == nil {
 		return nil, auth.ErrAuthenticationFailed
@@ -78,7 +78,7 @@ func (a UserAuthenticator) AuthenticatePassword(_ context.Context, username stri
 	return user, nil
 }
 
-// GetSubjectByID implements SubjectRepository.
+// GetSubjectByID implements [SubjectRepository].
 func (a UserAuthenticator) GetSubjectByID(_ context.Context, id auth.SubjectID) (auth.Subject, error) {
 	user, ok := a.entries[id.String()]
 	if !ok || !user.Enabled {
@@ -88,13 +88,13 @@ func (a UserAuthenticator) GetSubjectByID(_ context.Context, id auth.SubjectID) 
 	return user, nil
 }
 
-// RefreshTokenAuthenticator authenticates a refresh token and returns the auth.Subject it belongs to.
+// RefreshTokenAuthenticator authenticates a refresh token and returns the [auth.Subject] it belongs to.
 type RefreshTokenAuthenticator struct {
 	verifier          RefreshTokenVerifier
 	subjectRepository SubjectRepository
 }
 
-// NewRefreshTokenAuthenticator returns a new RefreshTokenAuthenticator.
+// NewRefreshTokenAuthenticator returns a new [RefreshTokenAuthenticator].
 func NewRefreshTokenAuthenticator(verifier RefreshTokenVerifier, subjectRepository SubjectRepository) RefreshTokenAuthenticator {
 	return RefreshTokenAuthenticator{
 		verifier:          verifier,
@@ -102,17 +102,17 @@ func NewRefreshTokenAuthenticator(verifier RefreshTokenVerifier, subjectReposito
 	}
 }
 
-// RefreshTokenVerifier verifies a refresh token and returns the Subject ID it belongs to.
+// RefreshTokenVerifier verifies a refresh token and returns the [auth.SubjectID] it belongs to.
 type RefreshTokenVerifier interface {
 	VerifyRefreshToken(ctx context.Context, service string, refreshToken string) (auth.SubjectID, error)
 }
 
-// SubjectRepository looks up an auth.Subject based on an identifier.
+// SubjectRepository looks up an [auth.Subject] based on an identifier.
 type SubjectRepository interface {
 	GetSubjectByID(ctx context.Context, id auth.SubjectID) (auth.Subject, error)
 }
 
-// AuthenticateRefreshToken implements auth.RefreshTokenAuthenticator.
+// AuthenticateRefreshToken implements [auth.RefreshTokenAuthenticator].
 func (a RefreshTokenAuthenticator) AuthenticateRefreshToken(ctx context.Context, service string, refreshToken string) (auth.Subject, error) {
 	subjectID, err := a.verifier.VerifyRefreshToken(ctx, service, refreshToken)
 	if err != nil {

@@ -8,7 +8,7 @@ import (
 	"github.com/portward/registry-auth/pkg/slices"
 )
 
-// Scopes is a list of Scope instances.
+// Scopes is a list of [Scope] instances.
 type Scopes []Scope
 
 func (s Scopes) String() string {

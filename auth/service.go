@@ -282,7 +282,7 @@ type LoggerTokenService struct {
 	Logger  *slog.Logger
 }
 
-// TokenHandler implements TokenService and logs every request.
+// TokenHandler implements [TokenService] and logs every request.
 func (s LoggerTokenService) TokenHandler(ctx context.Context, r TokenRequest) (TokenResponse, error) {
 	resp, err := s.Service.TokenHandler(ctx, r)
 
@@ -306,7 +306,7 @@ func (s LoggerTokenService) TokenHandler(ctx context.Context, r TokenRequest) (T
 	return resp, err
 }
 
-// OAuth2Handler implements TokenService and logs every request.
+// OAuth2Handler implements [TokenService] and logs every request.
 func (s LoggerTokenService) OAuth2Handler(ctx context.Context, r OAuth2Request) (OAuth2Response, error) {
 	resp, err := s.Service.OAuth2Handler(ctx, r)
 
