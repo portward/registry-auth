@@ -9,7 +9,7 @@
 > [!WARNING]
 > **Project is under development. Backwards compatibility is not guaranteed.**
 
-## installation
+## Installation
 
 ```shell
 go get github.com/portward/registry-auth
