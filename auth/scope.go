@@ -1,25 +1,73 @@
 package auth
 
 import (
+	"cmp"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 
-	"github.com/portward/registry-auth/pkg/slices"
+	slicesx "github.com/portward/registry-auth/pkg/slices"
 )
 
 // Scopes is a list of [Scope] instances.
 type Scopes []Scope
 
+// Compare compares this with another instance of Scopes.
+// It compares the values of each Scope
+// and returns a value following the mechanics of [cmp.Compare].
+//
+// Note that the values of Scope.Actions are always cloned and sorted before comparison,
+// so this is not a cheap operation.
+func (s Scopes) Compare(other Scopes) int {
+	return slices.CompareFunc(s, other, func(x Scope, y Scope) int {
+		return x.Compare(y)
+	})
+}
+
+// Equals returns true if the other instance equals to this one, otherwise it returns false.
+func (s Scopes) Equals(other Scopes) bool {
+	return s.Compare(other) == 0
+}
+
 func (s Scopes) String() string {
 	// TODO: create a slices.MapToString??
-	return strings.Join(slices.Map(s, func(s Scope) string { return s.String() }), " ")
+	return strings.Join(slicesx.Map(s, func(s Scope) string { return s.String() }), " ")
 }
 
 // Scope describes an access request to a specific resource.
 type Scope struct {
 	Resource
 	Actions []string `json:"actions"`
+}
+
+// Compare compares this with another instance of Scope.
+// It compares the values of Resource and Actions (in this order)
+// and returns a value following the mechanics of [cmp.Compare].
+//
+// Note that the values of Actions are always cloned and sorted before comparison,
+// so this is not a cheap operation.
+func (s Scope) Compare(other Scope) int {
+	if result := s.Resource.Compare(other.Resource); result != 0 {
+		return result
+	}
+
+	thisActions := slices.Clone(s.Actions)
+	slices.Sort(thisActions)
+
+	otherActions := slices.Clone(other.Actions)
+	slices.Sort(otherActions)
+
+	if result := slices.Compare(thisActions, otherActions); result != 0 {
+		return result
+	}
+
+	return 0
+}
+
+// Equals returns true if the other instance equals to this one, otherwise it returns false.
+func (s Scope) Equals(other Scope) bool {
+	return s.Compare(other) == 0
 }
 
 func (s Scope) String() string {
@@ -32,6 +80,26 @@ type Resource struct {
 	Name string `json:"name"`
 }
 
+// Compare compares this with another instance of Resource.
+// It compares the values of Type and Name (in this order)
+// and returns a value following the mechanics of [cmp.Compare].
+func (r Resource) Compare(other Resource) int {
+	if result := cmp.Compare(r.Type, other.Type); result != 0 {
+		return result
+	}
+
+	if result := cmp.Compare(r.Name, other.Name); result != 0 {
+		return result
+	}
+
+	return 0
+}
+
+// Equals returns true if the other instance equals to this one, otherwise it returns false.
+func (r Resource) Equals(other Resource) bool {
+	return r.Compare(other) == 0
+}
+
 func (r Resource) String() string {
 	return fmt.Sprintf("%s:%s", r.Type, r.Name)
 }
@@ -39,7 +107,7 @@ func (r Resource) String() string {
 // ParseScopes calls ParseScope for each scope in the list.
 // If any of the scopes is invalid, ParseScopes returns an empty slice and an error.
 func ParseScopes(scopes []string) ([]Scope, error) {
-	return slices.TryMap(scopes, ParseScope)
+	return slicesx.TryMap(scopes, ParseScope)
 }
 
 // ParseScope parses a scope string into a formal structure according to the [Token Scope documentation].
@@ -72,7 +140,7 @@ func ParseScope(scope string) (Scope, error) {
 			Type: resourceType,
 			Name: resourceName,
 		},
-		Actions: slices.Map(strings.Split(actions, ","), strings.TrimSpace),
+		Actions: slicesx.Map(strings.Split(actions, ","), strings.TrimSpace),
 	}, nil
 }
 

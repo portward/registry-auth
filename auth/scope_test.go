@@ -95,6 +95,188 @@ func TestParseScope(t *testing.T) {
 	})
 }
 
+func TestScope_CompareAndEquals(t *testing.T) {
+	testCases := []struct {
+		x        auth.Scope
+		y        auth.Scope
+		expected int
+	}{
+		{
+			auth.Scope{},
+			auth.Scope{},
+			0,
+		},
+		{
+			auth.Scope{
+				Resource: auth.Resource{
+					Type: "repository",
+				},
+			},
+			auth.Scope{
+				Resource: auth.Resource{
+					Type: "repository",
+				},
+			},
+			0,
+		},
+		{
+			auth.Scope{
+				Resource: auth.Resource{
+					Type: "repository",
+					Name: "path/to/repo",
+				},
+			},
+			auth.Scope{
+				Resource: auth.Resource{
+					Type: "repository",
+					Name: "path/to/repo",
+				},
+			},
+			0,
+		},
+		{
+			auth.Scope{
+				Resource: auth.Resource{
+					Type: "repository",
+					Name: "path/to/repo",
+				},
+				Actions: []string{"pull", "push"},
+			},
+			auth.Scope{
+				Resource: auth.Resource{
+					Type: "repository",
+					Name: "path/to/repo",
+				},
+				Actions: []string{"pull", "push"},
+			},
+			0,
+		},
+		{
+			auth.Scope{
+				Resource: auth.Resource{
+					Type: "repository",
+					Name: "path/to/repo",
+				},
+				Actions: []string{"push", "pull"},
+			},
+			auth.Scope{
+				Resource: auth.Resource{
+					Type: "repository",
+					Name: "path/to/repo",
+				},
+				Actions: []string{"pull", "push"},
+			},
+			0,
+		},
+		{
+			auth.Scope{
+				Resource: auth.Resource{
+					Type: "a",
+				},
+			},
+			auth.Scope{
+				Resource: auth.Resource{
+					Type: "b",
+				},
+			},
+			-1,
+		},
+		{
+			auth.Scope{
+				Resource: auth.Resource{
+					Type: "b",
+				},
+			},
+			auth.Scope{
+				Resource: auth.Resource{
+					Type: "a",
+				},
+			},
+			1,
+		},
+		{
+			auth.Scope{
+				Resource: auth.Resource{
+					Type: "repository",
+					Name: "a",
+				},
+			},
+			auth.Scope{
+				Resource: auth.Resource{
+					Type: "repository",
+					Name: "b",
+				},
+			},
+			-1,
+		},
+		{
+			auth.Scope{
+				Resource: auth.Resource{
+					Type: "repository",
+					Name: "b",
+				},
+			},
+			auth.Scope{
+				Resource: auth.Resource{
+					Type: "repository",
+					Name: "a",
+				},
+			},
+			1,
+		},
+		{
+			auth.Scope{
+				Resource: auth.Resource{
+					Type: "repository",
+					Name: "path/to/repo",
+				},
+				Actions: []string{"pull"},
+			},
+			auth.Scope{
+				Resource: auth.Resource{
+					Type: "repository",
+					Name: "path/to/repo",
+				},
+				Actions: []string{"push"},
+			},
+			-1,
+		},
+		{
+			auth.Scope{
+				Resource: auth.Resource{
+					Type: "repository",
+					Name: "path/to/repo",
+				},
+				Actions: []string{"push"},
+			},
+			auth.Scope{
+				Resource: auth.Resource{
+					Type: "repository",
+					Name: "path/to/repo",
+				},
+				Actions: []string{"pull"},
+			},
+			1,
+		},
+	}
+
+	for _, testCase := range testCases {
+		testCase := testCase
+
+		t.Run("", func(t *testing.T) {
+			actual := testCase.x.Compare(testCase.y)
+
+			assert.Equal(t, testCase.expected, actual)
+
+			if testCase.expected == 0 {
+				assert.True(t, testCase.x.Equals(testCase.y))
+			} else {
+				assert.False(t, testCase.x.Equals(testCase.y))
+			}
+		})
+	}
+}
+
 func TestScope_String(t *testing.T) {
 	testCases := []struct {
 		scope    auth.Scope
@@ -146,4 +328,120 @@ func TestParseScopes(t *testing.T) {
 			})
 		}
 	})
+}
+
+func TestScopes_CompareAndEquals(t *testing.T) {
+	testCases := []struct {
+		x        auth.Scopes
+		y        auth.Scopes
+		expected int
+	}{
+		{
+			auth.Scopes{},
+			auth.Scopes{},
+			0,
+		},
+		{
+			auth.Scopes{
+				{
+					Resource: auth.Resource{
+						Type: "repository",
+						Name: "path/to/repo",
+					},
+					Actions: []string{"pull", "push"},
+				},
+			},
+			auth.Scopes{
+				{
+					Resource: auth.Resource{
+						Type: "repository",
+						Name: "path/to/repo",
+					},
+					Actions: []string{"push", "pull"},
+				},
+			},
+			0,
+		},
+		{
+			auth.Scopes{
+				{
+					Resource: auth.Resource{
+						Type: "repository",
+						Name: "path/to/repo-a",
+					},
+					Actions: []string{"pull", "push"},
+				},
+			},
+			auth.Scopes{
+				{
+					Resource: auth.Resource{
+						Type: "repository",
+						Name: "path/to/repo-b",
+					},
+					Actions: []string{"pull", "push"},
+				},
+			},
+			-1,
+		},
+		{
+			auth.Scopes{
+				{
+					Resource: auth.Resource{
+						Type: "repository",
+						Name: "path/to/repo-b",
+					},
+					Actions: []string{"pull", "push"},
+				},
+			},
+			auth.Scopes{
+				{
+					Resource: auth.Resource{
+						Type: "repository",
+						Name: "path/to/repo-a",
+					},
+					Actions: []string{"pull", "push"},
+				},
+			},
+			1,
+		},
+	}
+
+	for _, testCase := range testCases {
+		testCase := testCase
+
+		t.Run("", func(t *testing.T) {
+			actual := testCase.x.Compare(testCase.y)
+
+			assert.Equal(t, testCase.expected, actual)
+
+			if testCase.expected == 0 {
+				assert.True(t, testCase.x.Equals(testCase.y))
+			} else {
+				assert.False(t, testCase.x.Equals(testCase.y))
+			}
+		})
+	}
+}
+
+func TestScopes_String(t *testing.T) {
+	scopes := auth.Scopes{
+		{
+			Resource: auth.Resource{
+				Type: "repository",
+				Name: "path/to/repo-a",
+			},
+			Actions: []string{"pull", "push"},
+		},
+		{
+			Resource: auth.Resource{
+				Type: "repository",
+				Name: "path/to/repo-b",
+			},
+			Actions: []string{"pull", "push"},
+		},
+	}
+
+	const expected = "repository:path/to/repo-a:pull,push repository:path/to/repo-b:pull,push"
+
+	assert.Equal(t, expected, scopes.String())
 }

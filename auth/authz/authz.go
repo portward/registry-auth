@@ -3,6 +3,7 @@ package authz
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/portward/registry-auth/auth"
@@ -88,5 +89,5 @@ func (a DefaultRepositoryAuthorizer) Authorize(_ context.Context, name string, s
 		return []string{}, nil
 	}
 
-	return requestedActions, nil
+	return slices.Clone(requestedActions), nil
 }
