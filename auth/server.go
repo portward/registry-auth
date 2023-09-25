@@ -17,11 +17,11 @@ func init() {
 	decoder.IgnoreUnknownKeys(true)
 }
 
-// TokenServer implements the [Docker Registry v2 authentication] specification.
+// AuthorizationServer implements the [Docker Registry v2 authentication] specification.
 //
 // [Docker Registry v2 authentication]: https://github.com/distribution/distribution/blob/main/docs/spec/auth/index.md
-type TokenServer struct {
-	Service TokenService
+type AuthorizationServer struct {
+	Service AuthorizationService
 
 	ErrorHandler ErrorHandler
 }
@@ -36,7 +36,7 @@ func httpHandleError(err error, w http.ResponseWriter) {
 	http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 }
 
-func (s TokenServer) handleError(err error) {
+func (s AuthorizationServer) handleError(err error) {
 	if s.ErrorHandler == nil {
 		return
 	}
@@ -47,7 +47,7 @@ func (s TokenServer) handleError(err error) {
 // TokenHandler implements the [Docker Registry v2 authentication] specification.
 //
 // [Docker Registry v2 authentication]: https://github.com/distribution/distribution/blob/main/docs/spec/auth/token.md
-func (s TokenServer) TokenHandler(w http.ResponseWriter, r *http.Request) {
+func (s AuthorizationServer) TokenHandler(w http.ResponseWriter, r *http.Request) {
 	request, err := decodeTokenRequest(r)
 	if err != nil {
 		s.handleError(fmt.Errorf("decoding token request: %w", err))
@@ -108,7 +108,7 @@ type rawTokenRequest struct {
 // OAuth2Handler implements the [Docker Registry v2 OAuth2 authentication] specification.
 //
 // [Docker Registry v2 OAuth2 authentication]: https://github.com/distribution/distribution/blob/main/docs/spec/auth/oauth.md
-func (s TokenServer) OAuth2Handler(w http.ResponseWriter, r *http.Request) {
+func (s AuthorizationServer) OAuth2Handler(w http.ResponseWriter, r *http.Request) {
 	request, err := decodeOAuth2Request(r)
 	if err != nil {
 		s.handleError(fmt.Errorf("decoding oauth2 token request: %w", err))
