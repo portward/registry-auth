@@ -28,9 +28,15 @@ func (s Scope) String() string {
 
 // Resource describes a resource by type and name.
 type Resource struct {
-	Type  string `json:"type"`
-	Class string `json:"class"`
-	Name  string `json:"name"`
+	Type string `json:"type"`
+	Name string `json:"name"`
+
+	// Class is deprecated.
+	//
+	// Read more:
+	//   - https://github.com/distribution/distribution/pull/4061
+	//   - https://github.com/distribution/distribution/blob/main/docs/spec/auth/scope.md#resource-class
+	Class string `json:"class,omitempty"`
 }
 
 func (r Resource) String() string {

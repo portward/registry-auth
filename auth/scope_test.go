@@ -19,9 +19,8 @@ func TestParseScope(t *testing.T) {
 				"repository:path/to/repo:pull,push",
 				auth.Scope{
 					Resource: auth.Resource{
-						Type:  "repository",
-						Class: "",
-						Name:  "path/to/repo",
+						Type: "repository",
+						Name: "path/to/repo",
 					},
 					Actions: []string{"pull", "push"},
 				},
@@ -30,9 +29,8 @@ func TestParseScope(t *testing.T) {
 				"repository:path/to/repo: pull , push ",
 				auth.Scope{
 					Resource: auth.Resource{
-						Type:  "repository",
-						Class: "",
-						Name:  "path/to/repo",
+						Type: "repository",
+						Name: "path/to/repo",
 					},
 					Actions: []string{"pull", "push"},
 				},
@@ -52,9 +50,8 @@ func TestParseScope(t *testing.T) {
 				"repository:path/to/repo:pull,push,pull", // duplicates are allowed for now
 				auth.Scope{
 					Resource: auth.Resource{
-						Type:  "repository",
-						Class: "",
-						Name:  "path/to/repo",
+						Type: "repository",
+						Name: "path/to/repo",
 					},
 					Actions: []string{"pull", "push", "pull"},
 				},
@@ -108,9 +105,8 @@ func TestScope_String(t *testing.T) {
 		{
 			auth.Scope{
 				Resource: auth.Resource{
-					Type:  "repository",
-					Class: "",
-					Name:  "path/to/repo",
+					Type: "repository",
+					Name: "path/to/repo",
 				},
 				Actions: []string{"pull", "push"},
 			},
