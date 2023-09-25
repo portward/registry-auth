@@ -190,6 +190,11 @@ func (s AuthorizationServiceImpl) TokenHandler(ctx context.Context, r TokenReque
 		return TokenResponse{}, err
 	}
 
+	// Sort actions to make sure tokens are more consistent
+	for _, scope := range grantedScopes {
+		slices.Sort(scope.Actions)
+	}
+
 	token, err := s.TokenIssuer.IssueAccessToken(ctx, r.Service, subject, grantedScopes)
 	if err != nil {
 		return TokenResponse{}, err
@@ -245,6 +250,11 @@ func (s AuthorizationServiceImpl) OAuth2Handler(ctx context.Context, r OAuth2Req
 	grantedScopes, err := s.Authorizer.Authorize(ctx, subject, r.Scopes)
 	if err != nil {
 		return OAuth2Response{}, err
+	}
+
+	// Sort actions to make sure tokens are more consistent
+	for _, scope := range grantedScopes {
+		slices.Sort(scope.Actions)
 	}
 
 	token, err := s.TokenIssuer.IssueAccessToken(ctx, r.Service, subject, grantedScopes)
