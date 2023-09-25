@@ -175,3 +175,22 @@ type rawOAuth2Request struct {
 	Password     string `schema:"password"`
 	RefreshToken string `schema:"refresh_token"`
 }
+
+// ServeHTTP implements the [http.Handler] interface.
+//
+// Use it to register the AuthorizationServer directly as an HTTP handler.
+// Otherwise, register the handler in an HTTP router directly:
+//   - GET / -> [AuthorizationServer.TokenHandler]
+//   - POST / -> [AuthorizationServer.OAuth2Handler]
+func (s AuthorizationServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		s.TokenHandler(w, r)
+
+	case http.MethodPost:
+		s.OAuth2Handler(w, r)
+
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
