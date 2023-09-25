@@ -30,20 +30,9 @@ func (s Scope) String() string {
 type Resource struct {
 	Type string `json:"type"`
 	Name string `json:"name"`
-
-	// Class is deprecated.
-	//
-	// Read more:
-	//   - https://github.com/distribution/distribution/pull/4061
-	//   - https://github.com/distribution/distribution/blob/main/docs/spec/auth/scope.md#resource-class
-	Class string `json:"class,omitempty"`
 }
 
 func (r Resource) String() string {
-	if r.Class != "" {
-		return fmt.Sprintf("%s(%s):%s", r.Type, r.Class, r.Name)
-	}
-
 	return fmt.Sprintf("%s:%s", r.Type, r.Name)
 }
 
@@ -73,16 +62,15 @@ func ParseScope(scope string) (Scope, error) {
 		return Scope{}, fmt.Errorf("invalid scope format: %q", scope)
 	}
 
-	resourceType, resourceClass := splitResourceClass(resourceType)
+	resourceType, _ = splitResourceClass(resourceType)
 	if resourceType == "" {
 		return Scope{}, fmt.Errorf("invalid scope format: %q", scope)
 	}
 
 	return Scope{
 		Resource: Resource{
-			Type:  resourceType,
-			Class: resourceClass,
-			Name:  resourceName,
+			Type: resourceType,
+			Name: resourceName,
 		},
 		Actions: slices.Map(strings.Split(actions, ","), strings.TrimSpace),
 	}, nil
@@ -90,6 +78,14 @@ func ParseScope(scope string) (Scope, error) {
 
 var resourceTypeRegexp = regexp.MustCompile(`^([a-z0-9]+)(\([a-z0-9]+\))?$`)
 
+// splitResourceClass parses a resource name and extracts the resource class (if any).
+//
+// The resource class is deprecated; this is here for backwards compatibility reasons
+// to allow parsing scopes with resource classes.
+//
+// Read more:
+//   - https://github.com/distribution/distribution/pull/4061
+//   - https://github.com/distribution/distribution/blob/main/docs/spec/auth/scope.md#resource-class
 func splitResourceClass(t string) (string, string) {
 	matches := resourceTypeRegexp.FindStringSubmatch(t)
 	if len(matches) < 2 {

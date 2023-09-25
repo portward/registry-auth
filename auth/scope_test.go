@@ -39,9 +39,8 @@ func TestParseScope(t *testing.T) {
 				"repository(class):path/to/repo:pull",
 				auth.Scope{
 					Resource: auth.Resource{
-						Type:  "repository",
-						Class: "class",
-						Name:  "path/to/repo",
+						Type: "repository",
+						Name: "path/to/repo",
 					},
 					Actions: []string{"pull"},
 				},
@@ -60,9 +59,8 @@ func TestParseScope(t *testing.T) {
 				"repository::pull",
 				auth.Scope{
 					Resource: auth.Resource{
-						Type:  "repository",
-						Class: "",
-						Name:  "",
+						Type: "repository",
+						Name: "",
 					},
 					Actions: []string{"pull"},
 				},
