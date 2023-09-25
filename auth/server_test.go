@@ -109,26 +109,12 @@ func TestAuthorizationServer(t *testing.T) {
 		Service: service,
 	}
 
-	router := http.NewServeMux()
-	router.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet:
-			server.TokenHandler(w, r)
-
-		case http.MethodPost:
-			server.OAuth2Handler(w, r)
-
-		default:
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		}
-	})
-
-	httpServer := httptest.NewServer(router)
+	httpServer := httptest.NewServer(server)
 
 	t.Run("TokenHandler", func(t *testing.T) {
 		t.Parallel()
 
-		request, err := http.NewRequest(http.MethodGet, httpServer.URL+"/token", nil)
+		request, err := http.NewRequest(http.MethodGet, httpServer.URL, nil)
 		require.NoError(t, err)
 
 		request.SetBasicAuth("user", "password")
@@ -275,7 +261,7 @@ func TestAuthorizationServer(t *testing.T) {
 	t.Run("Oauth2Handler", func(t *testing.T) {
 		t.Parallel()
 
-		request, err := http.NewRequest(http.MethodPost, httpServer.URL+"/token", nil)
+		request, err := http.NewRequest(http.MethodPost, httpServer.URL, nil)
 		require.NoError(t, err)
 
 		request.Header.Add("Content-Type", "application/x-www-form-urlencoded")
