@@ -32,7 +32,7 @@ func (g idGeneratorStub) GenerateID() (string, error) {
 	return g.id, nil
 }
 
-func TestServer(t *testing.T) {
+func TestAuthorizationServer(t *testing.T) {
 	t.Parallel()
 
 	const (
@@ -99,13 +99,13 @@ func TestServer(t *testing.T) {
 
 	authorizer := authz.NewDefaultAuthorizer(authz.NewDefaultRepositoryAuthorizer(true), true)
 
-	service := auth.TokenServiceImpl{
+	service := auth.AuthorizationServiceImpl{
 		Authenticator: authenticator,
 		Authorizer:    authorizer,
 		TokenIssuer:   tokenIssuer,
 	}
 
-	server := auth.TokenServer{
+	server := auth.AuthorizationServer{
 		Service: service,
 	}
 

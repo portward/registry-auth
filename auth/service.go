@@ -8,11 +8,10 @@ import (
 	"time"
 )
 
-// TokenService implements both the [Docker Registry v2 authentication] and the [Docker Registry v2 OAuth2 authentication] specification.
+// AuthorizationService defines an interface for the [Docker Registry v2 authentication].
 //
-// [Docker Registry v2 authentication]: https://github.com/distribution/distribution/blob/main/docs/spec/auth/token.md
-// [Docker Registry v2 OAuth2 authentication]: https://github.com/distribution/distribution/blob/main/docs/spec/auth/oauth.md
-type TokenService interface {
+// [Docker Registry v2 authentication]: https://github.com/distribution/distribution/blob/main/docs/spec/auth/index.md
+type AuthorizationService interface {
 	// TokenHandler implements the [Docker Registry v2 authentication] specification.
 	//
 	// [Docker Registry v2 authentication]: https://github.com/distribution/distribution/blob/main/docs/spec/auth/token.md
@@ -146,31 +145,31 @@ type OAuth2Response struct {
 	RefreshToken string `json:"refresh_token,omitempty"`
 }
 
-// Authenticator is a facade combining different type of authenticators.
-type Authenticator struct {
-	PasswordAuthenticator
-	RefreshTokenAuthenticator
-}
-
-// TokenIssuer is a facade combining different type of token issuers.
-type TokenIssuer struct {
-	AccessTokenIssuer
-	RefreshTokenIssuer
-}
-
-// TokenServer implements the [Docker Registry v2 authentication] specification.
+// AuthorizationServiceImpl implements the [Docker Registry v2 authentication] specification.
 //
 // [Docker Registry v2 authentication]: https://github.com/distribution/distribution/blob/main/docs/spec/auth/index.md
-type TokenServiceImpl struct {
+type AuthorizationServiceImpl struct {
 	Authenticator Authenticator
 	Authorizer    Authorizer
 	TokenIssuer   TokenIssuer
 }
 
+// Authenticator is a facade combining a [PasswordAuthenticator] and a [RefreshTokenAuthenticator].
+type Authenticator struct {
+	PasswordAuthenticator
+	RefreshTokenAuthenticator
+}
+
+// TokenIssuer is a facade combining an [AccessTokenIssuer] and a [RefreshTokenIssuer].
+type TokenIssuer struct {
+	AccessTokenIssuer
+	RefreshTokenIssuer
+}
+
 // TokenHandler implements the [Docker Registry v2 authentication] specification.
 //
 // [Docker Registry v2 authentication]: https://github.com/distribution/distribution/blob/main/docs/spec/auth/token.md
-func (s TokenServiceImpl) TokenHandler(ctx context.Context, r TokenRequest) (TokenResponse, error) {
+func (s AuthorizationServiceImpl) TokenHandler(ctx context.Context, r TokenRequest) (TokenResponse, error) {
 	if err := r.Validate(); err != nil {
 		return TokenResponse{}, err
 	}
@@ -213,7 +212,7 @@ func (s TokenServiceImpl) TokenHandler(ctx context.Context, r TokenRequest) (Tok
 	return response, nil
 }
 
-func (s TokenServiceImpl) OAuth2Handler(ctx context.Context, r OAuth2Request) (OAuth2Response, error) {
+func (s AuthorizationServiceImpl) OAuth2Handler(ctx context.Context, r OAuth2Request) (OAuth2Response, error) {
 	if err := r.Validate(); err != nil {
 		return OAuth2Response{}, err
 	}
@@ -278,7 +277,7 @@ func (s TokenServiceImpl) OAuth2Handler(ctx context.Context, r OAuth2Request) (O
 
 // LoggerTokenService acts as a middleware for a TokenService and logs every request.
 type LoggerTokenService struct {
-	Service TokenService
+	Service AuthorizationService
 	Logger  *slog.Logger
 }
 
