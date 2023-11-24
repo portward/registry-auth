@@ -6,7 +6,7 @@ require (
 	github.com/docker/libtrust v0.0.0-20160708172513-aabc10ec26b7
 	github.com/gofrs/uuid v4.4.0+incompatible
 	github.com/golang-jwt/jwt/v4 v4.5.0
-	github.com/gorilla/schema v1.2.0
+	github.com/gorilla/schema v1.2.1
 	github.com/jonboulle/clockwork v0.4.0
 	github.com/stretchr/testify v1.8.4
 	golang.org/x/crypto v0.15.0
