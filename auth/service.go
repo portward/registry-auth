@@ -285,14 +285,14 @@ func (s AuthorizationServiceImpl) OAuth2Handler(ctx context.Context, r OAuth2Req
 	return response, nil
 }
 
-// LoggerTokenService acts as a middleware for a TokenService and logs every request.
-type LoggerTokenService struct {
+// LoggerAuthorizationService acts as a middleware for an [AUthorizationService] and logs every request.
+type LoggerAuthorizationService struct {
 	Service AuthorizationService
 	Logger  *slog.Logger
 }
 
-// TokenHandler implements [TokenService] and logs every request.
-func (s LoggerTokenService) TokenHandler(ctx context.Context, r TokenRequest) (TokenResponse, error) {
+// TokenHandler implements [AUthorizationService] and logs every request.
+func (s LoggerAuthorizationService) TokenHandler(ctx context.Context, r TokenRequest) (TokenResponse, error) {
 	resp, err := s.Service.TokenHandler(ctx, r)
 
 	logger := s.Logger.With(
@@ -315,8 +315,8 @@ func (s LoggerTokenService) TokenHandler(ctx context.Context, r TokenRequest) (T
 	return resp, err
 }
 
-// OAuth2Handler implements [TokenService] and logs every request.
-func (s LoggerTokenService) OAuth2Handler(ctx context.Context, r OAuth2Request) (OAuth2Response, error) {
+// OAuth2Handler implements [AUthorizationService] and logs every request.
+func (s LoggerAuthorizationService) OAuth2Handler(ctx context.Context, r OAuth2Request) (OAuth2Response, error) {
 	resp, err := s.Service.OAuth2Handler(ctx, r)
 
 	logger := s.Logger.With(
