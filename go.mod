@@ -9,7 +9,7 @@ require (
 	github.com/gorilla/schema v1.3.0
 	github.com/jonboulle/clockwork v0.4.0
 	github.com/stretchr/testify v1.9.0
-	golang.org/x/crypto v0.22.0
+	golang.org/x/crypto v0.23.0
 )
 
 require (
