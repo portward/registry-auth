@@ -4,7 +4,7 @@ import (
 	"fmt"
 
 	"github.com/docker/libtrust"
-	"github.com/golang-jwt/jwt/v4"
+	"github.com/golang-jwt/jwt/v5"
 )
 
 func detectSigningMethod(signingKey libtrust.PrivateKey) (jwt.SigningMethod, error) {

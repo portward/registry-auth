@@ -2,9 +2,10 @@ package jwt
 
 import (
 	"context"
+	"time"
 
 	"github.com/docker/libtrust"
-	"github.com/golang-jwt/jwt/v4"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/jonboulle/clockwork"
 
 	"github.com/portward/registry-auth/auth"
@@ -79,8 +80,16 @@ func (i RefreshTokenIssuer) VerifyRefreshToken(_ context.Context, service string
 		// TODO: return error?
 	}
 
-	claims.VerifyAudience(service, true)
-	claims.VerifyIssuer(i.issuer, true)
+	validator := jwt.NewValidator(
+		jwt.WithLeeway(5*time.Second),
+		jwt.WithAudience(service),
+		jwt.WithIssuer(i.issuer),
+	)
+
+	err = validator.Validate(claims)
+	if err != nil {
+		return nil, err
+	}
 
 	return auth.SubjectIDFromString(claims.Subject), nil
 }
