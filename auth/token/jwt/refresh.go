@@ -67,7 +67,7 @@ func (i RefreshTokenIssuer) IssueRefreshToken(_ context.Context, service string,
 func (i RefreshTokenIssuer) VerifyRefreshToken(_ context.Context, service string, refreshToken string) (auth.SubjectID, error) {
 	var claims jwt.RegisteredClaims
 
-	token, err := jwt.ParseWithClaims(refreshToken, &claims, func(token *jwt.Token) (interface{}, error) {
+	token, err := jwt.ParseWithClaims(refreshToken, &claims, func(_ *jwt.Token) (interface{}, error) {
 		return i.signingKey.CryptoPublicKey(), nil
 	})
 	if err != nil {
