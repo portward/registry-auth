@@ -1,11 +1,14 @@
 default:
     just --list
 
+# Disable Dagger traces setup
+export NOTHANKS := "1"
+
 test:
-    go test -race -v ./...
+    dagger call test stdout
 
 lint:
-    golangci-lint run
+    dagger call lint stdout
 
 fmt:
     golangci-lint run --fix

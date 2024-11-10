@@ -28,13 +28,13 @@ To see it in action, check out [https://github.com/portward/portward](https://gi
 Run tests:
 
 ```shell
-go test -race -v ./...
+just test
 ```
 
 Run linter:
 
 ```shell
-golangci-lint run
+just lint
 ```
 
 ## License
