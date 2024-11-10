@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/docker/libtrust"
-	"github.com/golang-jwt/jwt/v4"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/jonboulle/clockwork"
 
 	"github.com/portward/registry-auth/auth"
