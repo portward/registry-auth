@@ -1,6 +1,7 @@
 module github.com/portward/registry-auth
 
 go 1.21.0
+toolchain go1.23.7
 
 require (
 	github.com/docker/libtrust v0.0.0-20160708172513-aabc10ec26b7
@@ -9,7 +10,7 @@ require (
 	github.com/gorilla/schema v1.4.1
 	github.com/jonboulle/clockwork v0.5.0
 	github.com/stretchr/testify v1.10.0
-	golang.org/x/crypto v0.31.0
+	golang.org/x/crypto v0.36.0
 )
 
 require (
